@@ -1,4 +1,3 @@
-
 import type { Handler } from '@netlify/functions'
 import { DateTime } from 'luxon'
 import { checkAuth, requireEnv, TZ } from './_shared'
@@ -17,8 +16,9 @@ export const handler: Handler = async (event) => {
 
     const url = new URL(`${SUPABASE_URL}/rest/v1/appointments`)
     url.searchParams.set('select', 'id,patient_name,phone_e164,appointment_at,duration_min,chair,status')
-    url.searchParams.set('appointment_at', f'gte.{startUTC}')
-    url.searchParams.append('appointment_at', f'lte.{endUTC}')
+    // Supabase REST: puoi mettere più filtri sullo stesso campo ripetendo il parametro
+    url.searchParams.set('appointment_at', `gte.${startUTC}`)
+    url.searchParams.append('appointment_at', `lte.${endUTC}`)
     url.searchParams.set('order', 'appointment_at.asc')
 
     const res = await fetch(url.toString(), {
