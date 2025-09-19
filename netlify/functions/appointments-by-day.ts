@@ -1,33 +1,33 @@
+// netlify/functions/appointments-by-day.ts
 import type { Handler } from '@netlify/functions'
-import { DateTime } from 'luxon'
-import { checkAuth, requireEnv, TZ } from './_shared'
+import { json, badRequest, serverError, supaHeaders, SUPABASE_URL } from './_shared'
 
+/**
+ * Query: ?date=YYYY-MM-DD
+ * Ritorna gli appuntamenti del giorno (UTC) per disegnarli nell'agenda.
+ */
 export const handler: Handler = async (event) => {
   try {
-    if (!checkAuth(event.headers)) return { statusCode: 401, body: 'Unauthorized' }
-    const SUPABASE_URL = requireEnv('SUPABASE_URL')
-    const SUPABASE_SERVICE_ROLE_KEY = requireEnv('SUPABASE_SERVICE_ROLE_KEY')
+    const date = event.queryStringParameters?.date
+    if (!date) return badRequest('Missing date')
 
-    const { date } = event.queryStringParameters || {}
-    if (!date) return { statusCode: 400, body: 'Missing date param YYYY-MM-DD' }
-
-    const startUTC = DateTime.fromISO(date, { zone: TZ }).startOf('day').toUTC().toISO()
-    const endUTC = DateTime.fromISO(date, { zone: TZ }).endOf('day').toUTC().toISO()
+    // intervallo UTC del giorno
+    const startUTC = `${date}T00:00:00.000Z`
+    const endUTC = `${date}T23:59:59.999Z`
 
     const url = new URL(`${SUPABASE_URL}/rest/v1/appointments`)
-    url.searchParams.set('select', 'id,patient_name,phone_e164,appointment_at,duration_min,chair,status')
-    // Supabase REST: puoi mettere più filtri sullo stesso campo ripetendo il parametro
-    url.searchParams.set('appointment_at', `gte.${startUTC}`)
-    url.searchParams.append('appointment_at', `lte.${endUTC}`)
-    url.searchParams.set('order', 'appointment_at.asc')
+    const params = url.searchParams
+    params.set('select', 'id,patient_name,phone_e164,appointment_at,duration_min,chair,status')
+    params.set('appointment_at', `gte.${startUTC}`)
+    params.append('appointment_at', `lte.${endUTC}`)
+    params.set('order', 'appointment_at.asc')
 
-    const res = await fetch(url.toString(), {
-      headers: { 'apikey': SUPABASE_SERVICE_ROLE_KEY, 'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` }
-    })
-    if (!res.ok) return { statusCode: 500, body: await res.text() }
-    const rows = await res.json()
-    return { statusCode: 200, body: JSON.stringify({ appointments: rows }) }
+    const r = await fetch(url.toString(), { headers: supaHeaders() })
+    if (!r.ok) return badRequest(await r.text())
+    const data = await r.json()
+
+    return json({ items: data })
   } catch (e: any) {
-    return { statusCode: 500, body: e.message || 'Internal error' }
+    return serverError(e?.message || String(e))
   }
 }
