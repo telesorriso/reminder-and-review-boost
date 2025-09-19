@@ -1,81 +1,87 @@
-
+// netlify/functions/appointments-create.ts
 import type { Handler } from '@netlify/functions'
-import { checkAuth, computeSchedules, localToUTC, requireEnv, TZ } from './_shared'
+import { json, badRequest, serverError, supaHeaders, SUPABASE_URL } from './_shared'
 
+/**
+ * Body JSON atteso:
+ * {
+ *   "contact_id": "<opzionale>",
+ *   "patient_name": "Nome Cognome"  // se non passi contact_id
+ *   "phone_e164": "+39....",        // se non passi contact_id
+ *   "appointment_at": "2025-09-19T15:30:00.000Z", // ISO UTC
+ *   "duration_min": 30,
+ *   "chair": 1
+ * }
+ * Crea l'appuntamento e 3 messaggi: day-before, same-day, review (2h dopo).
+ */
 export const handler: Handler = async (event) => {
   try {
-    if (!checkAuth(event.headers)) return { statusCode: 401, body: 'Unauthorized' }
-    if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' }
+    if (event.httpMethod !== 'POST') return badRequest('POST only')
+    if (!event.body) return badRequest('Missing body')
 
-    const body = JSON.parse(event.body || '{}')
-    const { contact_id, patient_name, phone_e164, date_local, time_local, duration_min, chair, review_delay_hours } = body
-    if ((!patient_name || !phone_e164) && !contact_id) return { statusCode: 400, body: 'Provide contact_id or patient_name+phone_e164' }
-    if (!date_local || !time_local) return { statusCode: 400, body: 'Missing date_local/time_local' }
+    const body = JSON.parse(event.body)
 
-    const SUPABASE_URL = requireEnv('SUPABASE_URL')
-    const SUPABASE_SERVICE_ROLE_KEY = requireEnv('SUPABASE_SERVICE_ROLE_KEY')
-    const reviewDelay = Number(review_delay_hours || 2)
-    const duration = Math.max(15, Number(duration_min || 30))
-    const chairNum = [1,2].includes(Number(chair)) ? Number(chair) : 1
-
-    let finalName = patient_name
-    let finalPhone = phone_e164
-    if (contact_id && (!patient_name || !phone_e164)) {
-      const cRes = await fetch(`${SUPABASE_URL}/rest/v1/contacts?id=eq.${contact_id}&select=first_name,last_name,phone_e164`, {
-        headers: { 'apikey': SUPABASE_SERVICE_ROLE_KEY, 'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` }
-      })
-      if (!cRes.ok) return { statusCode: 500, body: await cRes.text() }
-      const [c] = await cRes.json()
-      if (!c) return { statusCode: 400, body: 'Invalid contact_id' }
-      finalName = `${c.first_name} ${c.last_name}`
-      finalPhone = c.phone_e164
+    // Se passa contact_id, leggi i dati del contatto
+    if (body.contact_id && (!body.patient_name || !body.phone_e164)) {
+      const cu = new URL(`${SUPABASE_URL}/rest/v1/contacts`)
+      cu.searchParams.set('id', `eq.${body.contact_id}`)
+      cu.searchParams.set('select', 'first_name,last_name,phone_e164')
+      const cr = await fetch(cu.toString(), { headers: supaHeaders() })
+      if (!cr.ok) return badRequest(await cr.text())
+      const [c] = await cr.json()
+      if (!c) return badRequest('Contact not found')
+      body.patient_name = `${c.first_name} ${c.last_name}`.trim()
+      body.phone_e164 = c.phone_e164
     }
 
-    const apptAtUTC = localToUTC(date_local, time_local)
-    const schedules = computeSchedules(apptAtUTC, reviewDelay)
+    const required = ['patient_name', 'phone_e164', 'appointment_at', 'duration_min', 'chair']
+    for (const k of required) {
+      if (!body[k]) return badRequest(`Missing ${k}`)
+    }
 
-    const insertApptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
+    // Inserisci appuntamento
+    const ar = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_SERVICE_ROLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        'Prefer': 'return=representation'
-      },
+      headers: supaHeaders(),
       body: JSON.stringify({
-        contact_id: contact_id || null,
-        patient_name: finalName,
-        phone_e164: finalPhone,
-        appointment_at: apptAtUTC.toISO(),
-        duration_min: duration,
-        chair: chairNum,
-        timezone: TZ,
-        review_delay_hours: reviewDelay,
+        patient_name: body.patient_name,
+        phone_e164: body.phone_e164,
+        appointment_at: body.appointment_at, // deve essere UTC
+        duration_min: body.duration_min,
+        chair: body.chair,
         status: 'scheduled'
       })
     })
-    if (!insertApptRes.ok) return { statusCode: 500, body: await insertApptRes.text() }
-    const appt = (await insertApptRes.json())[0]
+    if (!ar.ok) return badRequest(await ar.text())
+    const [appt] = await ar.json()
+
+    // Crea i 3 messaggi programmati
+    const apptAt = new Date(body.appointment_at) // UTC
+    const sameDayAt = new Date(apptAt)           // 2 ore prima dell'orario
+    sameDayAt.setHours(sameDayAt.getHours() - 2)
+
+    const dayBeforeAt = new Date(apptAt)
+    dayBeforeAt.setDate(dayBeforeAt.getDate() - 1)
+    dayBeforeAt.setHours(9, 0, 0, 0) // 09:00 del giorno prima
+
+    const reviewAt = new Date(apptAt)
+    reviewAt.setHours(reviewAt.getHours() + 2) // 2 ore dopo
 
     const messages = [
-      { appointment_id: appt.id, type: 'reminder_day_before', scheduled_at: schedules.dayBefore18UTC, payload: { name: finalName } },
-      { appointment_id: appt.id, type: 'reminder_same_day', scheduled_at: schedules.sameDayMinus3hUTC, payload: { name: finalName } },
-      { appointment_id: appt.id, type: 'review', scheduled_at: schedules.reviewUTC, payload: { name: finalName } },
+      { appointment_id: appt.id, type: 'reminder_day_before', scheduled_at: dayBeforeAt.toISOString(), status: 'pending' },
+      { appointment_id: appt.id, type: 'reminder_same_day',  scheduled_at: sameDayAt.toISOString(),  status: 'pending' },
+      { appointment_id: appt.id, type: 'review',              scheduled_at: reviewAt.toISOString(),   status: 'pending' }
     ]
 
-    const insertMsgRes = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+    const mr = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_SERVICE_ROLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-      },
+      headers: supaHeaders(),
       body: JSON.stringify(messages)
     })
-    if (!insertMsgRes.ok) return { statusCode: 500, body: await insertMsgRes.text() }
+    if (!mr.ok) return badRequest(await mr.text())
 
-    return { statusCode: 200, body: JSON.stringify({ ok: true, appointment_id: appt.id, schedules }) }
+    return json({ ok: true, appointment: appt })
   } catch (e: any) {
-    return { statusCode: 500, body: e.message || 'Internal error' }
+    return serverError(e?.message || String(e))
   }
 }
