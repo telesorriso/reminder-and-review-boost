@@ -1,28 +1,27 @@
-
+// netlify/functions/contacts-list.ts
 import type { Handler } from '@netlify/functions'
-import { checkAuth, requireEnv } from './_shared'
+import { json, badRequest, serverError, supaHeaders, SUPABASE_URL } from './_shared'
 
 export const handler: Handler = async (event) => {
   try {
-    if (!checkAuth(event.headers)) return { statusCode: 401, body: 'Unauthorized' }
-    const SUPABASE_URL = requireEnv('SUPABASE_URL')
-    const SUPABASE_SERVICE_ROLE_KEY = requireEnv('SUPABASE_SERVICE_ROLE_KEY')
+    const q = (event.queryStringParameters?.q || '').trim()
 
-    const search = (event.queryStringParameters || {})['q'] || ''
     const url = new URL(`${SUPABASE_URL}/rest/v1/contacts`)
-    url.searchParams.set('select', 'id,first_name,last_name,phone_e164')
-    if (search) {
-      url.searchParams.set('or', `(first_name.ilike.*${search}*,last_name.ilike.*${search}*,phone_e164.ilike.*${search}*)`)
-    }
-    url.searchParams.set('order', 'last_name.asc')
+    const params = url.searchParams
+    params.set('select', 'id,first_name,last_name,phone_e164')
+    params.set('order', 'last_name.asc,first_name.asc')
+    params.set('limit', '200')
 
-    const res = await fetch(url.toString(), {
-      headers: { 'apikey': SUPABASE_SERVICE_ROLE_KEY, 'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` }
-    })
-    if (!res.ok) return { statusCode: 500, body: await res.text() }
-    const rows = await res.json()
-    return { statusCode: 200, body: JSON.stringify({ contacts: rows }) }
+    if (q) {
+      // ricerca semplice su nome/cognome/telefono
+      params.set('or', `first_name.ilike.*${q}*,last_name.ilike.*${q}*,phone_e164.ilike.*${q}*`)
+    }
+
+    const r = await fetch(url.toString(), { headers: supaHeaders() })
+    if (!r.ok) return badRequest(await r.text())
+    const data = await r.json()
+    return json({ items: data })
   } catch (e: any) {
-    return { statusCode: 500, body: e.message || 'Internal error' }
+    return serverError(e?.message || String(e))
   }
 }
