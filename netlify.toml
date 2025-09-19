@@ -1,6 +1,5 @@
-
 [build]
-  command = "npm run build"
+  command = "npm install && npm run build"
   publish = "dist"
 
 [functions]
@@ -9,3 +8,6 @@
 [[scheduled.functions]]
   name = "scheduler"
   cron = "*/5 * * * *"
+
+[build.environment]
+  NODE_VERSION = "20"
