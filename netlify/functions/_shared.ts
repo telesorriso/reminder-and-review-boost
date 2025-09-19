@@ -1,37 +1,33 @@
-
-import { DateTime } from 'luxon'
-
-export const TZ = 'Europe/Rome'
-
-export function requireEnv(name: string): string {
-  const v = process.env[name]
-  if (!v) throw new Error(`Missing env var: ${name}`)
-  return v
-}
-
-export function checkAuth(headers: Record<string, string | string[] | undefined>) {
-  const sent = (headers['x-api-key'] || headers['X-Api-Key'] || '') as string
-  const token = process.env.ADMIN_TOKEN || ''
-  return !!token && sent === token
-}
-
-export function localToUTC(dateLocal: string, timeLocal: string) {
-  const dt = DateTime.fromISO(`${dateLocal}T${timeLocal}`, { zone: TZ })
-  return dt.toUTC()
-}
-
-export function formatLocal(dtUTC: string) {
-  return DateTime.fromISO(dtUTC, { zone: 'utc' }).setZone(TZ).toFormat('dd/LL/yyyy HH:mm')
-}
-
-export function computeSchedules(appointmentAtUTC: DateTime, reviewDelayHours: number) {
-  const local = appointmentAtUTC.setZone(TZ)
-  const dayBefore18Local = local.minus({ days: 1 }).set({ hour: 18, minute: 0, second: 0, millisecond: 0 }).toUTC()
-  const sameDayMinus3h = local.minus({ hours: 3 }).toUTC()
-  const review = local.plus({ hours: reviewDelayHours }).toUTC()
+// netlify/functions/_shared.ts
+export function json(body: unknown, status = 200) {
   return {
-    dayBefore18UTC: dayBefore18Local.toISO(),
-    sameDayMinus3hUTC: sameDayMinus3h.toISO(),
-    reviewUTC: review.toISO(),
+    statusCode: status,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   }
 }
+
+export function badRequest(message = 'Bad request') {
+  return json({ error: message }, 400)
+}
+
+export function unauthorized(message = 'Unauthorized') {
+  // non più usato, ma lo teniamo per compatibilità
+  return json({ error: message }, 401)
+}
+
+// Headers per Supabase REST usando la service_role (solo lato funzione!)
+export function supaHeaders() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const url = process.env.SUPABASE_URL
+  if (!key || !url) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY or SUPABASE_URL in env')
+  }
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+  }
+}
+
+export const SUPABASE_URL = process.env.SUPABASE_URL!
