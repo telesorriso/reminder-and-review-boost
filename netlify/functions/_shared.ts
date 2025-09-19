@@ -11,12 +11,10 @@ export function badRequest(message = 'Bad request') {
   return json({ error: message }, 400)
 }
 
-export function unauthorized(message = 'Unauthorized') {
-  // non più usato, ma lo teniamo per compatibilità
-  return json({ error: message }, 401)
+export function serverError(message = 'Server error') {
+  return json({ error: message }, 500)
 }
 
-// Headers per Supabase REST usando la service_role (solo lato funzione!)
 export function supaHeaders() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   const url = process.env.SUPABASE_URL
