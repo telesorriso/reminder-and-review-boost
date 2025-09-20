@@ -2,28 +2,27 @@
 import { DateTime } from "luxon";
 import { createClient } from "@supabase/supabase-js";
 
-// ====== Env ======
+// ===== Env =====
 export const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
-  // Durante il bundle non lanciare errori, ma a runtime le funzioni restituiranno 500 con messaggio chiaro
   console.warn("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars");
 }
 
-// ====== Supabase ======
+// ===== Supabase client (service role) =====
 export const supa = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false },
 });
 
 // Quando usi fetch verso PostgREST
-export const supaHeaders = {
+export const supaHeaders: Record<string, string> = {
   apikey: SERVICE_KEY,
   Authorization: `Bearer ${SERVICE_KEY}`,
   "Content-Type": "application/json",
 };
 
-// ====== HTTP helpers ======
+// ===== HTTP helpers (unici, nessun duplicato) =====
 export const ok = (body: unknown) =>
   new Response(JSON.stringify(body), {
     status: 200,
@@ -48,7 +47,7 @@ export const serverError = (msg: string) =>
     headers: { "Content-Type": "application/json" },
   });
 
-// ====== Utilities ======
+// ===== Time utils =====
 const TZ = "Europe/Rome";
 
 export const romeToUtcISO = (dateLocal: string, timeLocal: string) => {
@@ -60,17 +59,17 @@ export const romeToUtcISO = (dateLocal: string, timeLocal: string) => {
 };
 
 export const romeDayRangeUTC = (isoDate: string) => {
-  // Limiti [startUTC, endUTC) del giorno in Europa/Roma convertiti in UTC ISO
-  const startUTC = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
+  const start = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
     .toUTC()
     .toISO()!;
-  const endUTC = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
+  const end = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
     .plus({ days: 1 })
     .toUTC()
     .toISO()!;
-  return { startUTC, endUTC };
+  return { start, end };
 };
 
+// ===== String utils =====
 export const splitName = (full: string) => {
   const s = (full || "").trim().replace(/\s+/g, " ");
   if (!s) return { first: "", last: "" };
