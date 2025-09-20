@@ -2,11 +2,22 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
-type Appointment = { id: string; patient_name: string; phone_e164: string; appointment_at: string; duration_min: number; chair: number; status: string }
-type Contact = { first_name: string; last_name: string; phone_e164: string }
+type Appointment = {
+  id: string
+  patient_name: string
+  phone_e164: string
+  appointment_at: string // UTC
+  duration_min: number
+  chair: number
+  status: string
+}
+type Contact = { id: string; first_name: string; last_name: string; phone_e164: string }
 
 const TZ = 'Europe/Rome'
-const toISODate = (d: Date) => DateTime.fromJSDate(d).setZone(TZ).toISODate()
+
+function toISODate(d: Date) {
+  return DateTime.fromJSDate(d).setZone(TZ).toISODate()
+}
 
 export const AgendaPage: React.FC<Props> = ({ getToken }) => {
   const [date, setDate] = useState<string>(toISODate(new Date()))
@@ -24,12 +35,14 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     setAppts(data.appointments || [])
   }
 
-  // Carica TUTTI i contatti (la function fa pagination interna)
   const fetchContacts = async () => {
+    // prende tutta la rubrica (la function lato server può essere configurata per restituire tutti i contatti)
     const res = await fetch('/.netlify/functions/contacts-list', { headers: { 'x-api-key': getToken() } })
     if (!res.ok) return
     const data = await res.json()
-    setContacts(data.items || [])
+    // accetta sia {items: [...] } sia {contacts: [...] }
+    const items = data.items || data.contacts || []
+    setContacts(items)
   }
 
   useEffect(() => { fetchAppts() }, [date])
@@ -39,11 +52,14 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     const out: string[] = []
     let t = DateTime.fromISO(`${date}T10:00`, { zone: TZ })
     const end = DateTime.fromISO(`${date}T20:00`, { zone: TZ })
-    while (t <= end) { out.push(t.toFormat('HH:mm')); t = t.plus({ minutes: slotMin }) }
+    while (t <= end) {
+      out.push(t.toFormat('HH:mm'))
+      t = t.plus({ minutes: slotMin })
+    }
     return out
   }, [date, slotMin])
 
-  const openSlot = (chair: 1|2, time: string) => setModal({ chair, time })
+  const openSlot = (chair: 1 | 2, time: string) => setModal({ chair, time })
 
   const isOccupied = (chair: number, time: string) => {
     const slotStartLocal = DateTime.fromISO(`${date}T${time}`, { zone: TZ })
@@ -64,7 +80,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     })
     if (!res.ok) return alert(await res.text())
     setModal(null)
-    fetchAppts()
+    await fetchAppts()
     alert('Appuntamento creato e promemoria programmati ✅')
   }
 
@@ -89,10 +105,12 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
         {times.map((t) => (
           <React.Fragment key={t}>
             <div style={{ fontSize: 12, opacity: 0.7, textAlign: 'right', paddingRight: 6 }}>{t}</div>
-            {[1,2].map((chair) => {
-              const occupied = isOccupied(chair as 1|2, t)
+            {[1, 2].map((chair) => {
+              const occupied = isOccupied(chair as 1 | 2, t)
               return (
-                <div key={chair} onClick={() => !occupied && openSlot(chair as 1|2, t)}
+                <div
+                  key={chair}
+                  onClick={() => !occupied && openSlot(chair as 1 | 2, t)}
                   style={{
                     border: '1px dashed #ccc',
                     minHeight: 28,
@@ -100,16 +118,19 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
                     cursor: occupied ? 'not-allowed' : 'pointer',
                     borderRadius: 6,
                     padding: 4
-                  }}>
-                  {appts.filter(a => {
-                    const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
-                    return a.chair === chair && startLocal === t
-                  }).map(a => (
-                    <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
-                      <div style={{ fontWeight: 600, fontSize: 12 }}>{a.patient_name}</div>
-                      <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
-                    </div>
-                  ))}
+                  }}
+                >
+                  {appts
+                    .filter(a => {
+                      const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
+                      return a.chair === chair && startLocal === t
+                    })
+                    .map(a => (
+                      <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
+                        <div style={{ fontWeight: 600, fontSize: 12 }}>{a.patient_name}</div>
+                        <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
+                      </div>
+                    ))}
                 </div>
               )
             })}
@@ -125,6 +146,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
           contacts={contacts}
           onClose={() => setModal(null)}
           onSave={saveAppointment}
+          refreshContacts={fetchContacts}
         />
       )}
     </div>
@@ -132,56 +154,81 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
 }
 
 const NewApptModal: React.FC<{
-  date: string; chair: 1|2; time: string;
-  contacts: Contact[];
-  onClose: () => void;
-  onSave: (payload: any) => void;
-}> = ({ date, chair, time, contacts, onClose, onSave }) => {
+  date: string
+  chair: 1 | 2
+  time: string
+  contacts: Contact[]
+  onClose: () => void
+  onSave: (payload: any) => void
+  refreshContacts: () => Promise<void>
+}> = ({ date, chair, time, contacts, onClose, onSave, refreshContacts }) => {
   const [useContact, setUseContact] = useState(true)
-
-  // 🔎 Ricerca locale
+  const [contactId, setContactId] = useState('')
   const [search, setSearch] = useState('')
+
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('+39')
+  const [duration, setDuration] = useState(30)
+  const [reviewDelay, setReviewDelay] = useState(2)
+  const [saveAsContact, setSaveAsContact] = useState(true)
+  const [saving, setSaving] = useState(false)
+
   const filtered = useMemo(() => {
-    const s = search.trim().toLowerCase()
-    if (!s) return contacts
+    const q = search.trim().toLowerCase()
+    if (!q) return contacts
     return contacts.filter(c => {
       const full = `${c.first_name ?? ''} ${c.last_name ?? ''} ${c.phone_e164 ?? ''}`.toLowerCase()
-      return full.includes(s)
+      return full.includes(q)
     })
   }, [contacts, search])
 
-  // selezione (usiamo il telefono come chiave per semplicità)
-  const [selectedPhone, setSelectedPhone] = useState('')
+  const submit = async () => {
+    if (useContact && !contactId) return alert('Seleziona un contatto')
+    if (!useContact && (!name.trim() || !phone.trim())) return alert('Inserisci nome e telefono')
 
-  // inserimento manuale
-  const [name, setName] = useState('')
-  const [phone, setPhone] = useState('+39')
+    setSaving(true)
+    try {
+      let payload: any = {
+        date_local: date,
+        time_local: time,
+        chair,
+        duration_min: Math.max(15, duration),
+        review_delay_hours: reviewDelay
+      }
 
-  const [duration, setDuration] = useState(30)
-  const [reviewDelay, setReviewDelay] = useState(2)
+      if (useContact) {
+        payload.contact_id = contactId
+      } else if (saveAsContact) {
+        // facoltativo: split nome/cognome
+        const [first, ...rest] = name.trim().split(/\s+/)
+        const last = rest.join(' ')
+        const res = await fetch('/.netlify/functions/contacts-create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            first_name: first || name,
+            last_name: last || '',
+            phone_e164: phone
+          })
+        })
+        const data = await res.json()
+        if (!res.ok || !data?.contact?.id) {
+          throw new Error(data?.error || 'Errore creazione contatto')
+        }
+        // aggiorna rubrica locale
+        await refreshContacts()
+        payload.contact_id = data.contact.id
+      } else {
+        payload.patient_name = name
+        payload.phone_e164 = phone
+      }
 
-  const submit = () => {
-    const payload: any = {
-      date_local: date,
-      time_local: time,
-      chair,
-      duration_min: Math.max(15, duration),
-      review_delay_hours: reviewDelay
+      await onSave(payload)
+    } catch (e: any) {
+      alert(e?.message || 'Errore inatteso')
+    } finally {
+      setSaving(false)
     }
-
-    if (useContact) {
-      if (!selectedPhone) return alert('Seleziona un contatto')
-      const c = contacts.find(x => x.phone_e164 === selectedPhone)
-      if (!c) return alert('Contatto non valido')
-      payload.patient_name = `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim()
-      payload.phone_e164 = c.phone_e164
-    } else {
-      if (!name || !phone) return alert('Inserisci nome e telefono')
-      payload.patient_name = name
-      payload.phone_e164 = phone
-    }
-
-    onSave(payload)
   }
 
   return (
@@ -189,7 +236,7 @@ const NewApptModal: React.FC<{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16
     }}>
-      <div style={{ background: '#fff', borderRadius: 12, padding: 16, width: 520 }}>
+      <div style={{ background: '#fff', borderRadius: 12, padding: 16, width: 560 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3>Crea nuovo appuntamento</h3>
           <button onClick={onClose}>✕</button>
@@ -201,34 +248,42 @@ const NewApptModal: React.FC<{
         </div>
 
         {useContact ? (
-          <div style={{ display: 'grid', gap: 8 }}>
-            <label>Cerca contatto (nome, cognome o telefono)
+          <>
+            <label style={{ display: 'block', marginBottom: 6 }}>
+              Cerca contatto (nome, cognome o telefono)
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="es. Rossi, Maria, +39..."
+                placeholder="es. Rossi, Maria, +39…"
+                style={{ width: '100%' }}
               />
             </label>
             <label>Contatto
-              <select value={selectedPhone} onChange={e => setSelectedPhone(e.target.value)}>
+              <select value={contactId} onChange={e => setContactId(e.target.value)} style={{ width: '100%' }}>
                 <option value="">— Scegli —</option>
-                {filtered.map((c, idx) => (
-                  <option key={`${c.phone_e164}-${idx}`} value={c.phone_e164}>
+                {filtered.map(c => (
+                  <option key={c.id} value={c.id}>
                     {c.last_name} {c.first_name} — {c.phone_e164}
                   </option>
                 ))}
               </select>
             </label>
-          </div>
+          </>
         ) : (
-          <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
-            <label>Nome e cognome
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="Mario Rossi" />
+          <>
+            <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+              <label>Nome e cognome
+                <input value={name} onChange={e => setName(e.target.value)} placeholder="Mario Rossi" />
+              </label>
+              <label>Telefono (WhatsApp, E.164)
+                <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+39..." />
+              </label>
+            </div>
+            <label style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={saveAsContact} onChange={() => setSaveAsContact(v => !v)} />
+              {' '}Salva come nuovo contatto in rubrica
             </label>
-            <label>Telefono (WhatsApp, E.164)
-              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+39..." />
-            </label>
-          </div>
+          </>
         )}
 
         <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr', marginTop: 8 }}>
@@ -263,8 +318,8 @@ const NewApptModal: React.FC<{
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button onClick={onClose}>Annulla</button>
-          <button onClick={submit}>Salva</button>
+          <button onClick={onClose} disabled={saving}>Annulla</button>
+          <button onClick={submit} disabled={saving}>{saving ? 'Salvo…' : 'Salva'}</button>
         </div>
       </div>
     </div>
