@@ -3,13 +3,10 @@ import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
 type Appointment = { id: string; patient_name: string; phone_e164: string; appointment_at: string; duration_min: number; chair: number; status: string }
-type Contact = { first_name: string; last_name: string; phone_e164: string } // niente id: la function non lo manda
+type Contact = { first_name: string; last_name: string; phone_e164: string }
 
 const TZ = 'Europe/Rome'
-
-function toISODate(d: Date) {
-  return DateTime.fromJSDate(d).setZone(TZ).toISODate()
-}
+const toISODate = (d: Date) => DateTime.fromJSDate(d).setZone(TZ).toISODate()
 
 export const AgendaPage: React.FC<Props> = ({ getToken }) => {
   const [date, setDate] = useState<string>(toISODate(new Date()))
@@ -27,11 +24,11 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     setAppts(data.appointments || [])
   }
 
+  // Carica TUTTI i contatti (la function fa pagination interna)
   const fetchContacts = async () => {
     const res = await fetch('/.netlify/functions/contacts-list', { headers: { 'x-api-key': getToken() } })
     if (!res.ok) return
     const data = await res.json()
-    // <- QUI la function restituisce { items: [...] }
     setContacts(data.items || [])
   }
 
@@ -42,10 +39,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     const out: string[] = []
     let t = DateTime.fromISO(`${date}T10:00`, { zone: TZ })
     const end = DateTime.fromISO(`${date}T20:00`, { zone: TZ })
-    while (t <= end) {
-      out.push(t.toFormat('HH:mm'))
-      t = t.plus({ minutes: slotMin })
-    }
+    while (t <= end) { out.push(t.toFormat('HH:mm')); t = t.plus({ minutes: slotMin }) }
     return out
   }, [date, slotMin])
 
@@ -144,9 +138,25 @@ const NewApptModal: React.FC<{
   onSave: (payload: any) => void;
 }> = ({ date, chair, time, contacts, onClose, onSave }) => {
   const [useContact, setUseContact] = useState(true)
-  const [selectedPhone, setSelectedPhone] = useState('') // usiamo il telefono come chiave
+
+  // 🔎 Ricerca locale
+  const [search, setSearch] = useState('')
+  const filtered = useMemo(() => {
+    const s = search.trim().toLowerCase()
+    if (!s) return contacts
+    return contacts.filter(c => {
+      const full = `${c.first_name ?? ''} ${c.last_name ?? ''} ${c.phone_e164 ?? ''}`.toLowerCase()
+      return full.includes(s)
+    })
+  }, [contacts, search])
+
+  // selezione (usiamo il telefono come chiave per semplicità)
+  const [selectedPhone, setSelectedPhone] = useState('')
+
+  // inserimento manuale
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('+39')
+
   const [duration, setDuration] = useState(30)
   const [reviewDelay, setReviewDelay] = useState(2)
 
@@ -191,16 +201,25 @@ const NewApptModal: React.FC<{
         </div>
 
         {useContact ? (
-          <label>Contatto
-            <select value={selectedPhone} onChange={e => setSelectedPhone(e.target.value)}>
-              <option value="">— Scegli —</option>
-              {contacts.map((c, idx) => (
-                <option key={`${c.phone_e164}-${idx}`} value={c.phone_e164}>
-                  {c.last_name} {c.first_name} — {c.phone_e164}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <label>Cerca contatto (nome, cognome o telefono)
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="es. Rossi, Maria, +39..."
+              />
+            </label>
+            <label>Contatto
+              <select value={selectedPhone} onChange={e => setSelectedPhone(e.target.value)}>
+                <option value="">— Scegli —</option>
+                {filtered.map((c, idx) => (
+                  <option key={`${c.phone_e164}-${idx}`} value={c.phone_e164}>
+                    {c.last_name} {c.first_name} — {c.phone_e164}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         ) : (
           <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
             <label>Nome e cognome
