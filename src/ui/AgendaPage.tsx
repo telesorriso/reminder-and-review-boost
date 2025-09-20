@@ -1,10 +1,9 @@
-
 import React, { useEffect, useMemo, useState } from 'react'
 import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
 type Appointment = { id: string; patient_name: string; phone_e164: string; appointment_at: string; duration_min: number; chair: number; status: string }
-type Contact = { id: string; first_name: string; last_name: string; phone_e164: string }
+type Contact = { first_name: string; last_name: string; phone_e164: string } // niente id: la function non lo manda
 
 const TZ = 'Europe/Rome'
 
@@ -32,7 +31,8 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     const res = await fetch('/.netlify/functions/contacts-list', { headers: { 'x-api-key': getToken() } })
     if (!res.ok) return
     const data = await res.json()
-    setContacts(data.contacts || [])
+    // <- QUI la function restituisce { items: [...] }
+    setContacts(data.items || [])
   }
 
   useEffect(() => { fetchAppts() }, [date])
@@ -144,15 +144,13 @@ const NewApptModal: React.FC<{
   onSave: (payload: any) => void;
 }> = ({ date, chair, time, contacts, onClose, onSave }) => {
   const [useContact, setUseContact] = useState(true)
-  const [contactId, setContactId] = useState('')
+  const [selectedPhone, setSelectedPhone] = useState('') // usiamo il telefono come chiave
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('+39')
   const [duration, setDuration] = useState(30)
   const [reviewDelay, setReviewDelay] = useState(2)
 
   const submit = () => {
-    if (useContact && !contactId) return alert('Seleziona un contatto')
-    if (!useContact && (!name || !phone)) return alert('Inserisci nome e telefono')
     const payload: any = {
       date_local: date,
       time_local: time,
@@ -160,8 +158,19 @@ const NewApptModal: React.FC<{
       duration_min: Math.max(15, duration),
       review_delay_hours: reviewDelay
     }
-    if (useContact) payload.contact_id = contactId
-    else { payload.patient_name = name; payload.phone_e164 = phone }
+
+    if (useContact) {
+      if (!selectedPhone) return alert('Seleziona un contatto')
+      const c = contacts.find(x => x.phone_e164 === selectedPhone)
+      if (!c) return alert('Contatto non valido')
+      payload.patient_name = `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim()
+      payload.phone_e164 = c.phone_e164
+    } else {
+      if (!name || !phone) return alert('Inserisci nome e telefono')
+      payload.patient_name = name
+      payload.phone_e164 = phone
+    }
+
     onSave(payload)
   }
 
@@ -183,10 +192,12 @@ const NewApptModal: React.FC<{
 
         {useContact ? (
           <label>Contatto
-            <select value={contactId} onChange={e => setContactId(e.target.value)}>
+            <select value={selectedPhone} onChange={e => setSelectedPhone(e.target.value)}>
               <option value="">— Scegli —</option>
-              {contacts.map(c => (
-                <option key={c.id} value={c.id}>{c.last_name} {c.first_name} — {c.phone_e164}</option>
+              {contacts.map((c, idx) => (
+                <option key={`${c.phone_e164}-${idx}`} value={c.phone_e164}>
+                  {c.last_name} {c.first_name} — {c.phone_e164}
+                </option>
               ))}
             </select>
           </label>
