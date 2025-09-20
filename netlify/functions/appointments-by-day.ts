@@ -1,33 +1,54 @@
 // netlify/functions/appointments-by-day.ts
-import type { Handler } from '@netlify/functions'
-import { json, badRequest, serverError, supaHeaders, SUPABASE_URL } from './_shared'
+import { badRequest, json, serverError, SUPABASE_URL, supaHeaders } from './_shared'
+import { DateTime } from 'luxon'
 
-/**
- * Query: ?date=YYYY-MM-DD
- * Ritorna gli appuntamenti del giorno (UTC) per disegnarli nell'agenda.
- */
-export const handler: Handler = async (event) => {
+export default async (req: Request) => {
   try {
-    const date = event.queryStringParameters?.date
-    if (!date) return badRequest('Missing date')
+    const url = new URL(req.url)
+    const date_local = url.searchParams.get('date')
+    if (!date_local) return badRequest('Missing date parameter')
 
-    // intervallo UTC del giorno
-    const startUTC = `${date}T00:00:00.000Z`
-    const endUTC = `${date}T23:59:59.999Z`
+    // inizio e fine giornata in UTC
+    const startUTC = DateTime.fromISO(`${date_local}T00:00`, { zone: 'Europe/Rome' }).toUTC().toISO()
+    const endUTC = DateTime.fromISO(`${date_local}T23:59`, { zone: 'Europe/Rome' }).toUTC().toISO()
 
-    const url = new URL(`${SUPABASE_URL}/rest/v1/appointments`)
-    const params = url.searchParams
-    params.set('select', 'id,patient_name,phone_e164,appointment_at,duration_min,chair,status')
-    params.set('appointment_at', `gte.${startUTC}`)
-    params.append('appointment_at', `lte.${endUTC}`)
-    params.set('order', 'appointment_at.asc')
+    // query appointments + join con contacts
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/appointments?select=*,contacts(id,first_name,last_name,phone_e164)&appointment_at=gte.${startUTC}&appointment_at=lte.${endUTC}`,
+      { headers: supaHeaders() }
+    )
 
-    const r = await fetch(url.toString(), { headers: supaHeaders() })
-    if (!r.ok) return badRequest(await r.text())
-    const data = await r.json()
+    if (!res.ok) {
+      const t = await res.text()
+      return serverError(new Error(`Failed fetching appointments: ${t}`))
+    }
 
-    return json({ items: data })
-  } catch (e: any) {
-    return serverError(e?.message || String(e))
+    const rows = await res.json()
+
+    const appointments = rows.map((a: any) => {
+      // normalizza i campi
+      const startLocal = DateTime.fromISO(a.appointment_at).setZone('Europe/Rome')
+      const name =
+        a.contacts?.first_name || a.contacts?.last_name
+          ? `${a.contacts.last_name ?? ''} ${a.contacts.first_name ?? ''}`.trim()
+          : a.patient_name || ''
+      const phone = a.contacts?.phone_e164 || a.phone_e164 || ''
+
+      return {
+        id: a.id,
+        chair: a.chair,
+        status: a.status,
+        appointment_at: a.appointment_at, // UTC originale
+        time_local: startLocal.toFormat('HH:mm'),
+        date_local: startLocal.toISODate(),
+        duration_min: a.duration_min,
+        patient_name: name,
+        phone_e164: phone,
+      }
+    })
+
+    return json({ appointments })
+  } catch (e) {
+    return serverError(e)
   }
 }
