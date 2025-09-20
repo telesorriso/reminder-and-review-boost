@@ -3,17 +3,17 @@ import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
 
-// NB: aggiunti contact_first_name / contact_last_name che arrivano dalla function
+// NB: includo anche i campi del contatto che arrivano dalla funzione
 type Appointment = {
   id: string
-  patient_name?: string
-  phone_e164?: string
+  patient_name: string | null
+  phone_e164: string | null
   appointment_at: string
   duration_min: number
   chair: number
   status: string
-  contact_first_name?: string
-  contact_last_name?: string
+  contact_first_name?: string | null
+  contact_last_name?: string | null
 }
 
 type Contact = { id: string; first_name: string; last_name: string; phone_e164: string }
@@ -61,7 +61,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     return out
   }, [date, slotMin])
 
-  const openSlot = (chair: 1|2, time: string) => setModal({ chair, time })
+  const openSlot = (chair: 1 | 2, time: string) => setModal({ chair, time })
 
   const isOccupied = (chair: number, time: string) => {
     const slotStartLocal = DateTime.fromISO(`${date}T${time}`, { zone: TZ })
@@ -86,6 +86,20 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     alert('Appuntamento creato e promemoria programmati ✅')
   }
 
+  // -------- helper per mostrare il nome in agenda --------
+  const displayName = (a: Appointment) => {
+    const p = (a.patient_name ?? '').trim()
+    const looksLikeTemplate = p.includes('{') || p.includes('}')
+    if (p && !looksLikeTemplate) return p
+
+    const last = (a.contact_last_name ?? '').trim()
+    const first = (a.contact_first_name ?? '').trim()
+    const name = `${last} ${first}`.trim()
+
+    return name || '—'
+  }
+  // -------------------------------------------------------
+
   return (
     <div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
@@ -107,10 +121,12 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
         {times.map((t) => (
           <React.Fragment key={t}>
             <div style={{ fontSize: 12, opacity: 0.7, textAlign: 'right', paddingRight: 6 }}>{t}</div>
-            {[1,2].map((chair) => {
-              const occupied = isOccupied(chair as 1|2, t)
+            {[1, 2].map((chair) => {
+              const occupied = isOccupied(chair as 1 | 2, t)
               return (
-                <div key={chair} onClick={() => !occupied && openSlot(chair as 1|2, t)}
+                <div
+                  key={chair}
+                  onClick={() => !occupied && openSlot(chair as 1 | 2, t)}
                   style={{
                     border: '1px dashed #ccc',
                     minHeight: 28,
@@ -122,18 +138,12 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
                   {appts.filter(a => {
                     const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
                     return a.chair === chair && startLocal === t
-                  }).map(a => {
-                    const fullName =
-                      (a.patient_name && a.patient_name.trim()) ||
-                      `${(a.contact_last_name || '').trim()} ${(a.contact_first_name || '').trim()}`.trim() ||
-                      '—'
-                    return (
-                      <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
-                        <div style={{ fontWeight: 600, fontSize: 12 }}>{fullName}</div>
-                        <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
-                      </div>
-                    )
-                  })}
+                  }).map(a => (
+                    <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>{displayName(a)}</div>
+                      <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
+                    </div>
+                  ))}
                 </div>
               )
             })}
@@ -156,7 +166,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
 }
 
 const NewApptModal: React.FC<{
-  date: string; chair: 1|2; time: string;
+  date: string; chair: 1 | 2; time: string;
   contacts: Contact[];
   onClose: () => void;
   onSave: (payload: any) => void;
