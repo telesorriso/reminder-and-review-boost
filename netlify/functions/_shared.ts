@@ -17,6 +17,24 @@ export const ok = (body: unknown) =>
     headers: { "Content-Type": "application/json" },
   });
 
+export const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+
+export const badRequest = (msg: string) =>
+  new Response(JSON.stringify({ error: msg }), {
+    status: 400,
+    headers: { "Content-Type": "application/json" },
+  });
+
+export const serverError = (msg: string) =>
+  new Response(JSON.stringify({ error: msg }), {
+    status: 500,
+    headers: { "Content-Type": "application/json" },
+  });
+
 export const badRequest = (msg: string) =>
   new Response(JSON.stringify({ error: msg }), {
     status: 400,
