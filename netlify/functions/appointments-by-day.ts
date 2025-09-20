@@ -2,45 +2,62 @@
 import type { Handler } from '@netlify/functions'
 import { ok, badRequest, serverError, romeDayRangeUTC, supa } from './_shared'
 
-export const handler: Handler = async (event) => {
+function getQueryDate(event: any): string {
   try {
-    const date = (new URL(event.rawUrl).searchParams.get('date') || '').trim()
+    if (event?.rawUrl) {
+      const d = new URL(event.rawUrl).searchParams.get('date')
+      if (d) return d.trim()
+    }
+  } catch {}
+  return String(event?.queryStringParameters?.date ?? '').trim()
+}
+
+export const handler: Handler = async (event) => {
+  // NB: catturo *tutto* qui per evitare 502
+  try {
+    const date = getQueryDate(event)
     if (!date) return badRequest('Missing ?date=YYYY-MM-DD')
 
     const { start, end } = romeDayRangeUTC(date)
 
-    // 1) Appuntamenti del giorno (mi porto dietro contact_id)
-    const { data: appts, error: apptsErr } = await supa
-      .from('appointments')
-      .select('id, patient_name, phone_e164, appointment_at, duration_min, chair, status, contact_id')
-      .gte('appointment_at', start)
-      .lt('appointment_at', end)
-      .order('appointment_at', { ascending: true })
+    // --- STEP 1: appuntamenti del giorno (mi porto dietro contact_id)
+    let appts: any[] = []
+    {
+      const { data, error } = await supa
+        .from('appointments')
+        .select('id, patient_name, phone_e164, appointment_at, duration_min, chair, status, contact_id')
+        .gte('appointment_at', start)
+        .lt('appointment_at', end)
+        .order('appointment_at', { ascending: true })
 
-    if (apptsErr) return serverError(apptsErr.message)
+      if (error) {
+        console.error('appointments-by-day STEP1 error:', error)
+        // restituisco comunque una risposta valida per evitare 502
+        return serverError(`STEP1: ${error.message}`)
+      }
+      appts = data ?? []
+    }
 
-    // 2) Se ci sono contact_id, prendo i contatti in un colpo solo
-    const contactIds = Array.from(
-      new Set((appts ?? []).map(a => a.contact_id).filter(Boolean) as string[])
-    )
-
-    let contactMap = new Map<string, { first_name: string | null, last_name: string | null }>()
-
+    // --- STEP 2: se ci sono contact_id, prendo i contatti in un colpo
+    const contactIds = Array.from(new Set(appts.map(a => a.contact_id).filter(Boolean) as string[]))
+    const contactMap = new Map<string, { first_name: string | null; last_name: string | null }>()
     if (contactIds.length > 0) {
-      const { data: contacts, error: contactsErr } = await supa
+      const { data: contacts, error } = await supa
         .from('contacts')
         .select('id, first_name, last_name')
         .in('id', contactIds)
 
-      if (contactsErr) return serverError(contactsErr.message)
-
-      for (const c of contacts || []) {
+      if (error) {
+        console.error('appointments-by-day STEP2 error:', error)
+        return serverError(`STEP2: ${error.message}`)
+      }
+      for (const c of contacts ?? []) {
         contactMap.set(c.id, { first_name: c.first_name ?? null, last_name: c.last_name ?? null })
       }
     }
 
-    // 3) Output piatto con campi contact_first_name/contact_last_name
-    const appointments = (appts || []).map((row: any) => {
+    // --- OUTPUT PIATTO con contact_first_name/last_name
+    const appointments = appts.map(row => {
       const names = row.contact_id ? contactMap.get(row.contact_id) : undefined
       return {
         id: row.id,
@@ -57,7 +74,7 @@ export const handler: Handler = async (event) => {
 
     return ok({ appointments })
   } catch (e: any) {
-    // qualsiasi eccezione: restituisco JSON 500 valido (evita status code 0)
+    console.error('appointments-by-day FATAL:', e)
     return serverError(e?.message || 'Unhandled error')
   }
 }
