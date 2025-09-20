@@ -1,4 +1,8 @@
 // netlify/functions/appointments-by-day.ts
+console.log('DEBUG START - env:', {
+  url: process.env.SUPABASE_URL,
+  hasKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY
+})
 import type { Handler } from '@netlify/functions'
 import { ok, badRequest, serverError, romeDayRangeUTC, supa } from './_shared'
 
