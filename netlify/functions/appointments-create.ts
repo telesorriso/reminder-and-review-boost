@@ -1,114 +1,65 @@
-// netlify/functions/appointments-create.ts
+import type { Handler } from '@netlify/functions';
 import {
-  SUPABASE_URL,
-  supaHeaders,
-  json,
-  badRequest,
-  serverError,
-  romeToUtcISO,
-  splitName,
-  isUUID,
-} from './_shared'
+  SUPABASE_URL, supaHeaders, ok, badRequest, serverError,
+  romeToUtcISO, splitName, isUUID
+} from './_shared';
 
-type Body = {
-  // passati dal frontend
-  date_local: string
-  time_local: string
-  chair: number
-  duration_min: number
-  review_delay_hours?: number
+export const handler: Handler = async (event) => {
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: { 'access-control-allow-origin': '*' } };
+  if (event.httpMethod !== 'POST') return badRequest('Use POST');
 
-  // modalità A: uso contatto esistente
-  contact_id?: string
-
-  // modalità B: inserimento manuale
-  patient_name?: string
-  phone_e164?: string
-
-  // opzionale: se true e non esiste contatto, crealo
-  save_contact?: boolean
-}
-
-export default async (req: Request) => {
   try {
-    if (req.method !== 'POST') return badRequest('Use POST')
+    const body = JSON.parse(event.body || '{}');
 
-    let body: Body
-    try {
-      body = (await req.json()) as Body
-    } catch {
-      return badRequest('Invalid JSON')
-    }
+    const { date_local, time_local, chair, duration_min, review_delay_hours } = body;
+    if (!date_local || !time_local) return badRequest('Missing date_local/time_local');
+    const appointment_at = romeToUtcISO(date_local, time_local);
 
-    const {
-      date_local,
-      time_local,
-      chair,
-      duration_min,
-      review_delay_hours,
-      contact_id,
-      patient_name,
-      phone_e164,
-      save_contact,
-    } = body
+    let patient_name = body.patient_name as string | undefined;
+    let phone_e164 = body.phone_e164 as string | undefined;
+    let contact_id = body.contact_id as string | undefined;
 
-    if (!date_local || !time_local) return badRequest('Missing date_local/time_local')
-    if (!chair) return badRequest('Missing chair')
-    if (!duration_min) return badRequest('Missing duration_min')
-
-    let finalContactId: string | null = null
-    let finalName = patient_name || ''
-    let finalPhone = phone_e164 || ''
-
-    // Se ho contact_id lo uso.
-    if (contact_id) {
-      if (!isUUID(contact_id)) return badRequest('contact_id must be a UUID')
-      finalContactId = contact_id
+    // Se arriva un contact_id valido, ignora nome/telefono manuali
+    if (contact_id && isUUID(contact_id)) {
+      // ok, useremo il contatto esistente
     } else {
-      // Inserimento manuale: servono nome e telefono
-      if (!finalName || !finalPhone) return badRequest('Missing patient_name or phone_e164')
-
-      if (save_contact) {
-        // creo/aggiorno contatto (upsert su phone_e164)
-        const { first_name, last_name } = splitName(finalName)
-        const upsertRes = await fetch(`${SUPABASE_URL}/rest/v1/contacts`, {
+      // creazione manuale (o "salva come contatto")
+      if (!patient_name || !phone_e164) return badRequest('Missing patient_name/phone_e164');
+      if (body.save_contact) {
+        const { first_name, last_name } = splitName(patient_name);
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/contacts`, {
           method: 'POST',
-          headers: { ...supaHeaders(), Prefer: 'resolution=merge-duplicates' },
-          body: JSON.stringify([{ first_name, last_name, phone_e164: finalPhone }]),
-        })
-        if (!upsertRes.ok) return serverError(await upsertRes.text())
-        const [ins] = await upsertRes.json()
-        finalContactId = ins?.id ?? null
+          headers: supaHeaders(),
+          body: JSON.stringify([{ first_name, last_name, phone_e164 }]),
+        });
+        if (!r.ok) return serverError(await r.text());
+        const [created] = await r.json();
+        contact_id = created?.id; // useremo questo
       }
     }
 
-    const appointment_at = romeToUtcISO(date_local, time_local)
+    // Crea l'appuntamento
+    const apptPayload = [{
+      contact_id: contact_id || null,
+      patient_name: patient_name || null,
+      phone_e164: phone_e164 || null,
+      appointment_at,
+      duration_min: duration_min ?? 30,
+      chair: chair ?? 1,
+      status: 'scheduled',
+      review_delay_hours: review_delay_hours ?? 2,
+    }];
 
-    // Inserisco l’appuntamento
-    const insertPayload: any = [
-      {
-        appointment_at,
-        chair,
-        duration_min,
-        status: 'scheduled',
-        review_delay_hours: review_delay_hours ?? 2,
-        contact_id: finalContactId,
-        // fallback se non c'è contact_id
-        patient_name: finalContactId ? null : finalName,
-        phone_e164: finalContactId ? null : finalPhone,
-      },
-    ]
-
-    const insRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
+    const resAppt = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',
       headers: supaHeaders(),
-      body: JSON.stringify(insertPayload),
-    })
-    if (!insRes.ok) return serverError(await insRes.text())
-    const [row] = await insRes.json()
+      body: JSON.stringify(apptPayload),
+    });
+    if (!resAppt.ok) return serverError(await resAppt.text());
 
-    return json({ ok: true, appointment: row })
+    const [appt] = await resAppt.json();
+    return ok({ success: true, appointment: appt });
   } catch (e) {
-    return serverError(e)
+    return serverError(e);
   }
-}
+};
