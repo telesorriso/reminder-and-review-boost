@@ -1,153 +1,112 @@
 // netlify/functions/appointments-create.ts
-import type { Handler } from '@netlify/functions'
-import { json, badRequest, supaHeaders, SUPABASE_URL } from './_shared'
+import { badRequest, json, serverError, SUPABASE_URL, supaHeaders, romeToUtcISO, splitName, isUUID } from './_shared'
+import { DateTime } from 'luxon'
 
-// ---- Helpers (tutte ritornano {statusCode, headers, body}) ----
-async function parseJsonBody(eventBody: string | null | undefined) {
-  const raw = eventBody ?? ''
-  if (!raw.trim()) throw new Error('EMPTY_BODY')
+export default async (req: Request) => {
   try {
-    return JSON.parse(raw)
-  } catch {
-    throw new Error('INVALID_JSON')
-  }
-}
+    if (req.method !== 'POST') return badRequest('Use POST')
 
-function serverError(message: string, extra: any = {}) {
-  return {
-    statusCode: 500,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ error: message, ...extra }),
-  }
-}
-
-// ---- Handler ----
-export const handler: Handler = async (event) => {
-  try {
-    if (event.httpMethod !== 'POST') return badRequest('Use POST')
-
-    // parse robusta del body
     let body: any
     try {
-      body = await parseJsonBody(event.body)
-    } catch (e: any) {
-      if (e?.message === 'EMPTY_BODY') return badRequest('Empty request body')
-      if (e?.message === 'INVALID_JSON') return badRequest('Invalid JSON body')
-      return serverError('Body parse error')
+      body = await req.json()
+    } catch {
+      return badRequest('Invalid JSON body')
     }
 
-    // campi attesi
     const {
-      contact_id,
-      patient_name,
-      phone_e164,
-      appointment_at,
-      chair,
-      duration_min,
-      review_delay_hours,
-      save_contact,
+      // sempre presenti
+      date_local,            // "YYYY-MM-DD"
+      time_local,            // "HH:mm"
+      chair,                 // 1 | 2
+      duration_min,          // number
+      review_delay_hours,    // number (es. 2 o 24)
+
+      // uno dei due rami:
+      contact_id,            // UUID di contacts.id
+      patient_name,          // quando inserito manualmente
+      phone_e164,            // quando inserito manualmente (+39…)
+      save_contact,          // boolean: se true, crea/aggiorna contatto
     } = body || {}
 
-    // validazioni
-    if (!appointment_at) return badRequest('Missing appointment_at')
+    // validazioni di base
+    if (!date_local || !time_local) return badRequest('Missing date_local or time_local')
     if (!chair) return badRequest('Missing chair')
-    if (!duration_min) return badRequest('Missing duration_min')
-    if (review_delay_hours === undefined || review_delay_hours === null)
-      return badRequest('Missing review_delay_hours')
+    const duration = Number(duration_min || 30)
+    const reviewDelay = Number(review_delay_hours || 2)
 
-    if (!contact_id) {
-      if (!patient_name || !phone_e164) {
-        return badRequest('Missing patient_name or phone_e164')
-      }
-    }
+    // calcolo istante UTC
+    const appointment_at = romeToUtcISO(String(date_local), String(time_local))
 
-    // 1) opzionale: salva/aggiorna contatto (upsert su phone_e164)
-    let effectiveContactId: string | undefined = contact_id
-    if (!effectiveContactId && save_contact && phone_e164) {
-      const upsertRes = await fetch(`${SUPABASE_URL}/rest/v1/contacts`, {
-        method: 'POST',
-        headers: { ...supaHeaders(), prefer: 'resolution=merge-duplicates' },
-        body: JSON.stringify([
-          {
-            first_name: String(patient_name || '').split(' ')[0] || null,
-            last_name: String(patient_name || '').split(' ').slice(1).join(' ') || null,
-            phone_e164,
+    // ricava nome/telefono/contatto, gestendo i due rami
+    let finalContactId: string | null = null
+    let finalName = ''
+    let finalPhone = ''
+
+    if (contact_id) {
+      if (!isUUID(String(contact_id))) return badRequest('contact_id must be a UUID')
+      finalContactId = String(contact_id)
+    } else {
+      if (!patient_name || !phone_e164) return badRequest('Missing patient_name or phone_e164')
+      finalName = String(patient_name).trim()
+      finalPhone = String(phone_e164).trim()
+
+      // se richiesto, salva/aggiorna il contatto (upsert su phone_e164)
+      if (save_contact) {
+        const { first_name, last_name } = splitName(finalName)
+        const up = await fetch(`${SUPABASE_URL}/rest/v1/contacts?on_conflict=phone_e164`, {
+          method: 'POST',
+          headers: {
+            ...supaHeaders(),
+            Prefer: 'return=representation,resolution=merge-duplicates',
           },
-        ]),
-      })
-      if (!upsertRes.ok) {
-        const t = await upsertRes.text()
-        return serverError('Failed upserting contact', { details: t })
+          body: JSON.stringify([{ first_name, last_name, phone_e164: finalPhone }]),
+        })
+        if (!up.ok) {
+          const t = await up.text()
+          return serverError(new Error(`Failed upserting contact: ${t}`))
+        }
+        const rows = await up.json()
+        if (rows && rows[0]?.id) finalContactId = rows[0].id
       }
-
-      // recupero id contatto
-      const q = new URL(`${SUPABASE_URL}/rest/v1/contacts`)
-      q.searchParams.set('select', 'id')
-      q.searchParams.set('phone_e164', `eq.${phone_e164}`)
-      const getRes = await fetch(q, { headers: supaHeaders() })
-      const rows = (await getRes.json()) as any[]
-      effectiveContactId = rows?.[0]?.id
     }
 
-    // 2) crea appuntamento
-    const apptPayload: any = {
-      appointment_at, // ISO UTC
-      duration_min,
+    // crea l'appuntamento
+    const insertPayload: any = {
       chair,
+      duration_min: duration,
+      appointment_at,       // UTC timestamptz
       status: 'scheduled',
     }
-    if (effectiveContactId) {
-      apptPayload.contact_id = effectiveContactId
-    } else {
-      apptPayload.patient_name = patient_name
-      apptPayload.phone_e164 = phone_e164
+    if (finalContactId) insertPayload.contact_id = finalContactId
+    if (!finalContactId) {
+      insertPayload.patient_name = finalName
+      insertPayload.phone_e164 = finalPhone
     }
 
     const ins = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',
-      headers: supaHeaders(),
-      body: JSON.stringify([apptPayload]),
+      headers: {
+        ...supaHeaders(),
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify([insertPayload]),
     })
     if (!ins.ok) {
       const t = await ins.text()
-      return serverError('Failed creating appointment', { details: t })
+      return serverError(new Error(`Failed creating appointment: ${t}`))
     }
-    const created = await ins.json()
+    const [appointment] = await ins.json()
 
-    // 3) programma i messaggi (esempio semplice su tabella messages)
-    const twoHoursBefore = new Date(new Date(appointment_at).getTime() - 2 * 60 * 60 * 1000).toISOString()
-    const reviewAt = new Date(new Date(appointment_at).getTime() + Number(review_delay_hours) * 3600 * 1000).toISOString()
-
-    const sched = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
-      method: 'POST',
-      headers: supaHeaders(),
-      body: JSON.stringify([
-        {
-          kind: 'reminder',
-          status: 'pending',
-          send_at: twoHoursBefore,
-          appointment_at,
-          phone_e164: phone_e164 ?? null,
-          contact_id: effectiveContactId ?? null,
-        },
-        {
-          kind: 'review',
-          status: 'pending',
-          send_at: reviewAt,
-          appointment_at,
-          phone_e164: phone_e164 ?? null,
-          contact_id: effectiveContactId ?? null,
-        },
-      ]),
-    })
-    if (!sched.ok) {
-      const t = await sched.text()
-      return serverError('Failed scheduling messages', { details: t })
+    // (Opzionale) calcolo quando inviare review (se avete un job/cron che legge da appointments)
+    // Non inseriamo righe in "messages": il vostro scheduler/cron può leggerle da "appointments".
+    const summary = {
+      appointment_id: appointment?.id,
+      appointment_at,
+      review_at: DateTime.fromISO(appointment_at).plus({ hours: reviewDelay }).toUTC().toISO(),
     }
 
-    // risposta OK
-    return json({ ok: true, appointment: created?.[0] ?? null })
-  } catch (err: any) {
-    return serverError('Unhandled error', { details: err?.message })
+    return json({ ok: true, appointment, summary })
+  } catch (e) {
+    return serverError(e)
   }
 }
