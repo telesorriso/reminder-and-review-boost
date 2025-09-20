@@ -1,3 +1,4 @@
+// netlify/functions/appointments-by-day.ts
 import type { Handler } from '@netlify/functions'
 import { ok, badRequest, serverError, romeDayRangeUTC, supa } from './_shared'
 
@@ -8,34 +9,60 @@ export const handler: Handler = async (event) => {
 
     const { start, end } = romeDayRangeUTC(date)
 
-    // Query su appointments + relazione con contacts
-    const { data, error } = await supa
+    // 1) Prendo solo gli appuntamenti (senza join)
+    const { data: appts, error: apptsErr } = await supa
       .from('appointments')
-      .select(`
-        id, patient_name, phone_e164, appointment_at, duration_min, chair, status,
-        contacts:contact_id ( first_name, last_name )
-      `)
+      .select('id, patient_name, phone_e164, appointment_at, duration_min, chair, status, contact_id')
       .gte('appointment_at', start)
       .lt('appointment_at', end)
       .order('appointment_at', { ascending: true })
 
-    if (error) {
-      console.error('Supabase error:', error)
-      return serverError(error.message)
+    if (apptsErr) {
+      console.error('appointments error:', apptsErr)
+      return serverError(apptsErr.message)
     }
 
-    // Flatten dei dati
-    const appointments = (data || []).map((row: any) => ({
-      id: row.id,
-      patient_name: row.patient_name ?? null,
-      phone_e164: row.phone_e164 ?? null,
-      appointment_at: row.appointment_at,
-      duration_min: row.duration_min,
-      chair: row.chair,
-      status: row.status,
-      contact_first_name: row.contacts?.first_name ?? null,
-      contact_last_name: row.contacts?.last_name ?? null,
-    }))
+    // 2) Raccolgo gli id contatti presenti
+    const contactIds = Array.from(
+      new Set((appts || []).map(a => a.contact_id).filter(Boolean))
+    ) as string[]
+
+    // 3) Faccio una in() sui contatti (solo se ce ne sono)
+    let contactsById: Record<string, { first_name: string | null, last_name: string | null }> = {}
+    if (contactIds.length) {
+      const { data: contacts, error: contactsErr } = await supa
+        .from('contacts')
+        .select('id, first_name, last_name')
+        .in('id', contactIds)
+
+      if (contactsErr) {
+        console.error('contacts error:', contactsErr)
+        return serverError(contactsErr.message)
+      }
+
+      contactsById = Object.fromEntries(
+        (contacts || []).map(c => [
+          c.id,
+          { first_name: c.first_name ?? null, last_name: c.last_name ?? null }
+        ])
+      )
+    }
+
+    // 4) Output finale appiattito
+    const appointments = (appts || []).map((a: any) => {
+      const c = a.contact_id ? contactsById[a.contact_id] : undefined
+      return {
+        id: a.id,
+        patient_name: a.patient_name ?? null,
+        phone_e164: a.phone_e164 ?? null,
+        appointment_at: a.appointment_at,
+        duration_min: a.duration_min,
+        chair: a.chair,
+        status: a.status,
+        contact_first_name: c?.first_name ?? null,
+        contact_last_name: c?.last_name ?? null,
+      }
+    })
 
     return ok({ appointments })
   } catch (e: any) {
