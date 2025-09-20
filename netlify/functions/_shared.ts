@@ -60,15 +60,15 @@ export const romeToUtcISO = (dateLocal: string, timeLocal: string) => {
 };
 
 export const romeDayRangeUTC = (isoDate: string) => {
-  // start e end (exclusive) del giorno in Europa/Roma ma convertiti in UTC ISO
-  const start = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
+  // Limiti [startUTC, endUTC) del giorno in Europa/Roma convertiti in UTC ISO
+  const startUTC = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
     .toUTC()
     .toISO()!;
-  const end = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
+  const endUTC = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
     .plus({ days: 1 })
     .toUTC()
     .toISO()!;
-  return { start, end };
+  return { startUTC, endUTC };
 };
 
 export const splitName = (full: string) => {
