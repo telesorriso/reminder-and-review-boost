@@ -1,88 +1,110 @@
-// netlify/functions/appointments-create.ts
+// Crea un appuntamento. Supporta:
+// - { contact_id, date_local, time_local, chair, duration_min, review_delay_hours }
+// - { patient_name, phone_e164, date_local, time_local, chair, duration_min, review_delay_hours }
+// - opzionale: { save_contact: true } quando si inserisce manualmente
 import {
   ok,
   badRequest,
   serverError,
   supa,
   romeToUtcISO,
-  isUUID,
   splitName,
-} from "./_shared";
-
-type Body = {
-  date_local: string;
-  time_local: string;
-  chair: 1 | 2 | number;
-  duration_min: number;
-  review_delay_hours?: number;
-
-  contact_id?: string;
-
-  patient_name?: string;
-  phone_e164?: string;
-
-  save_as_contact?: boolean;
-};
+  isUUID,
+} from './_shared'
 
 export default async (req: Request) => {
   try {
-    if (req.method !== "POST") return badRequest("Use POST");
+    if (req.method !== 'POST') return badRequest('Use POST')
 
-    const body = (await req.json()) as Body;
+    const body = await req.json().catch(() => ({}))
+    const {
+      contact_id,
+      patient_name,
+      phone_e164,
+      date_local,
+      time_local,
+      chair,
+      duration_min,
+      review_delay_hours,
+      save_contact,
+    } = body || {}
 
-    if (!body?.date_local || !body?.time_local)
-      return badRequest("Missing date_local/time_local");
-    if (!body?.chair) return badRequest("Missing chair");
-    if (!body?.duration_min) return badRequest("Missing duration_min");
+    if (!date_local || !time_local) return badRequest('Missing date/time')
+    if (!chair) return badRequest('Missing chair')
+    if (!duration_min) return badRequest('Missing duration')
 
-    const appointment_at = romeToUtcISO(body.date_local, body.time_local);
+    // Calcolo istante appuntamento in UTC ISO
+    const appointment_at = romeToUtcISO(String(date_local), String(time_local))
 
-    let patient_name = body.patient_name?.trim();
-    let phone_e164 = body.phone_e164?.trim();
+    let finalPatientName: string | null = (patient_name ?? '').trim() || null
+    let finalContactId: string | null = contact_id ?? null
+    let finalPhone: string | null = (phone_e164 ?? '').trim() || null
 
-    if (body.contact_id) {
-      if (!isUUID(body.contact_id)) return badRequest("Invalid contact_id");
-      const { data: contact, error: cErr } = await supa
-        .from("contacts")
-        .select("first_name,last_name,phone_e164")
-        .eq("id", body.contact_id)
-        .maybeSingle();
-      if (cErr) return serverError(cErr.message);
-      if (!contact) return badRequest("Contact not found");
-      patient_name = `${'{'}contact.last_name || ""{'}'} ${'{'}contact.first_name || ""{'}'}`.trim();
-      phone_e164 = contact.phone_e164;
+    // Se viene passato un contact_id, denormalizzo il nome per display
+    if (finalContactId) {
+      if (!isUUID(finalContactId)) return badRequest('Invalid contact_id')
+
+      const { data: c, error: ce } = await supa
+        .from('contacts')
+        .select('first_name,last_name,phone_e164')
+        .eq('id', finalContactId)
+        .single()
+
+      if (ce) return serverError(ce.message)
+
+      const display =
+        [c?.first_name, c?.last_name].filter(Boolean).join(' ').trim()
+      if (display) finalPatientName = display
+      if (!finalPhone) finalPhone = c?.phone_e164 ?? null
     }
 
-    if (!patient_name || !phone_e164)
-      return badRequest("Missing patient_name or phone_e164");
-
-    if (body.save_as_contact && !body.contact_id) {
-      const { first, last } = splitName(patient_name);
-      const { error: insErr } = await supa.from("contacts").insert({
-        first_name: first || null,
-        last_name: last || null,
-        phone_e164,
-      });
-      if (insErr) return serverError(`Create contact: ${'{'}insErr.message{'}'}`);
+    // Se inserimento manuale + richiesta di salvataggio contatto
+    if (!finalContactId && !finalPatientName && finalPhone) {
+      // se non hai indicato explicit patient_name ma hai un telefono,
+      // provo a derivare nome/cognome dal campo "patient_name" (anche vuoto)
+      const { first, last } = splitName(patient_name || '')
+      const toInsert = {
+        first_name: first,
+        last_name: last,
+        phone_e164: finalPhone,
+      }
+      if (save_contact) {
+        const { data: nc, error: ne } = await supa
+          .from('contacts')
+          .insert(toInsert)
+          .select('id, first_name, last_name')
+          .single()
+        if (ne) return serverError(ne.message)
+        finalContactId = nc.id
+        if (!finalPatientName) {
+          const nm = [nc.first_name, nc.last_name].filter(Boolean).join(' ').trim()
+          if (nm) finalPatientName = nm
+        }
+      }
     }
 
-    const { data: appt, error: aErr } = await supa
-      .from("appointments")
-      .insert({
-        patient_name,
-        phone_e164,
-        appointment_at,
-        duration_min: Math.max(15, body.duration_min),
-        chair: Number(body.chair),
-        status: "booked",
-      })
-      .select("id")
-      .single();
+    // Inserimento appuntamento
+    const insertPayload: any = {
+      appointment_at,
+      chair,
+      duration_min,
+      status: 'scheduled',
+      contact_id: finalContactId,
+      patient_name: finalPatientName,
+      phone_e164: finalPhone,
+      review_delay_hours: review_delay_hours ?? 2,
+    }
 
-    if (aErr) return serverError(`Create appointment: ${'{'}aErr.message{'}'}`);
+    const { data, error } = await supa
+      .from('appointments')
+      .insert(insertPayload)
+      .select('id')
+      .single()
 
-    return ok({ id: appt.id, success: true });
+    if (error) return serverError(error.message)
+
+    return ok({ id: data?.id })
   } catch (e: any) {
-    return serverError(e?.message || "Unhandled error");
+    return serverError(e?.message || 'Unhandled error')
   }
-};
+}
