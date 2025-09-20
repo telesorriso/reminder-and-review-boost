@@ -1,10 +1,7 @@
-// src/ui/AgendaPage.tsx
 import React, { useEffect, useMemo, useState } from 'react'
 import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
-
-// ← AGGIUNTO: includo i campi del contatto che il backend ora restituisce
 type Appointment = {
   id: string
   patient_name: string | null
@@ -16,19 +13,12 @@ type Appointment = {
   contact_first_name?: string | null
   contact_last_name?: string | null
 }
-
 type Contact = { id: string; first_name: string; last_name: string; phone_e164: string }
 
 const TZ = 'Europe/Rome'
-const toISODate = (d: Date) => DateTime.fromJSDate(d).setZone(TZ).toISODate()
 
-// ← AGGIUNTO: logica unica per il nome da mostrare
-const displayName = (a: Appointment) => {
-  if (a.patient_name && a.patient_name.trim()) return a.patient_name.trim()
-  const ln = a.contact_last_name?.trim() ?? ''
-  const fn = a.contact_first_name?.trim() ?? ''
-  const full = `${ln} ${fn}`.trim()
-  return full || '—'
+function toISODate(d: Date) {
+  return DateTime.fromJSDate(d).setZone(TZ).toISODate()
 }
 
 export const AgendaPage: React.FC<Props> = ({ getToken }) => {
@@ -129,14 +119,20 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
                   {appts.filter(a => {
                     const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
                     return a.chair === chair && startLocal === t
-                  }).map(a => (
-                    <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
-                      <div style={{ fontWeight: 600, fontSize: 12 }}>
-                        {displayName(a)}
+                  }).map(a => {
+                    const contactName = [a.contact_last_name, a.contact_first_name]
+                      .filter(Boolean)
+                      .join(' ')
+                      .trim()
+                    const displayName = contactName || (a.patient_name || '—')
+
+                    return (
+                      <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
+                        <div style={{ fontWeight: 600, fontSize: 12 }}>{displayName}</div>
+                        <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
                       </div>
-                      <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )
             })}
