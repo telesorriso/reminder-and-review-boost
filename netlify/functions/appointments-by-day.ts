@@ -1,35 +1,34 @@
-// netlify/functions/appointments-by-day.ts
-import {
-  ok,
-  badRequest,
-  serverError,
-  supa,
-  romeDayRangeUTC,
-} from "./_shared";
+import type { Handler } from '@netlify/functions';
+import { supa, ok, badRequest, serverError, romeDayRangeUTC } from './_shared';
+import { DateTime } from 'luxon';
 
-export default async (req: Request) => {
+const TZ = 'Europe/Rome';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/; // YYYY-MM-DD
+
+export const handler: Handler = async (event) => {
   try {
-    const url = new URL(req.url);
-    const date = url.searchParams.get("date"); // YYYY-MM-DD
+    // 1) Leggi e valida la data dalla query
+    const raw = (event.queryStringParameters?.date || '').trim();
 
-    if (!date) return badRequest("Missing `date` param");
+    const targetDate = DATE_RE.test(raw)
+      ? raw
+      : DateTime.now().setZone(TZ).toISODate()!; // fallback sicuro
 
-    const { startUTC, endUTC } = romeDayRangeUTC(date);
+    // 2) Calcola range UTC del giorno in Europa/Roma
+    const { startUTC, endUTC } = romeDayRangeUTC(targetDate);
 
+    // 3) Query su Supabase (appointments nella giornata)
     const { data, error } = await supa
-      .from("appointments")
-      .select(
-        "id, patient_name, phone_e164, appointment_at, duration_min, chair, status"
-      )
-      .gte("appointment_at", startUTC)
-      .lt("appointment_at", endUTC)
-      .order("appointment_at", { ascending: true });
+      .from('appointments')
+      .select('id, patient_name, phone_e164, appointment_at, duration_min, chair, status')
+      .gte('appointment_at', startUTC)
+      .lt('appointment_at', endUTC)
+      .order('appointment_at', { ascending: true });
 
-    if (error) return serverError(error);
+    if (error) return serverError(error.message);
 
-    // il frontend si aspetta { appointments: [...] }
     return ok({ appointments: data ?? [] });
-  } catch (err) {
-    return serverError(err);
+  } catch (e: any) {
+    return serverError(e?.message || 'Unhandled error');
   }
 };
