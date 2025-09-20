@@ -1,14 +1,27 @@
 // netlify/functions/_shared.ts
-import { createClient } from "@supabase/supabase-js";
 import { DateTime } from "luxon";
+import { createClient } from "@supabase/supabase-js";
 
-// ====== costanti/env ======
+// ====== Env ======
 export const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const TZ = "Europe/Rome";
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-// ====== supabase client ======
-export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+if (!SUPABASE_URL || !SERVICE_KEY) {
+  // Durante il bundle non lanciare errori, ma a runtime le funzioni restituiranno 500 con messaggio chiaro
+  console.warn("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars");
+}
+
+// ====== Supabase ======
+export const supa = createClient(SUPABASE_URL, SERVICE_KEY, {
+  auth: { persistSession: false },
+});
+
+// Quando usi fetch verso PostgREST
+export const supaHeaders = {
+  apikey: SERVICE_KEY,
+  Authorization: `Bearer ${SERVICE_KEY}`,
+  "Content-Type": "application/json",
+};
 
 // ====== HTTP helpers ======
 export const ok = (body: unknown) =>
@@ -35,75 +48,40 @@ export const serverError = (msg: string) =>
     headers: { "Content-Type": "application/json" },
   });
 
-export const badRequest = (msg: string) =>
-  new Response(JSON.stringify({ error: msg }), {
-    status: 400,
-    headers: { "Content-Type": "application/json" },
-  });
+// ====== Utilities ======
+const TZ = "Europe/Rome";
 
-export const serverError = (msg: string) =>
-  new Response(JSON.stringify({ error: msg }), {
-    status: 500,
-    headers: { "Content-Type": "application/json" },
-  });
+export const romeToUtcISO = (dateLocal: string, timeLocal: string) => {
+  // "2025-09-20", "10:15" -> UTC ISO
+  const dt = DateTime.fromISO(`${dateLocal}T${timeLocal}`, { zone: TZ })
+    .toUTC()
+    .toISO();
+  return dt!;
+};
 
-// ====== standard headers per chiamate REST a Supabase ======
-export const supaHeaders = () => ({
-  apiKey: SUPABASE_SERVICE_ROLE_KEY,
-  Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-  "Content-Type": "application/json",
-});
+export const romeDayRangeUTC = (isoDate: string) => {
+  // start e end (exclusive) del giorno in Europa/Roma ma convertiti in UTC ISO
+  const start = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
+    .toUTC()
+    .toISO()!;
+  const end = DateTime.fromISO(`${isoDate}T00:00`, { zone: TZ })
+    .plus({ days: 1 })
+    .toUTC()
+    .toISO()!;
+  return { start, end };
+};
 
-// Alias di compatibilità: alcuni file importano ancora "supa"
-export const supa = supaHeaders;
+export const splitName = (full: string) => {
+  const s = (full || "").trim().replace(/\s+/g, " ");
+  if (!s) return { first: "", last: "" };
+  const parts = s.split(" ");
+  if (parts.length === 1) return { first: parts[0], last: "" };
+  const first = parts[0];
+  const last = parts.slice(1).join(" ");
+  return { first, last };
+};
 
-// ====== utilità date/time ======
-
-/**
- * Dato un giorno "YYYY-MM-DD" (ora locale Roma),
- * ritorna l'intervallo in UTC ISO per [00:00, 24:00) di quel giorno.
- * Ritorna sia {start,end} che {from,to} per compatibilità.
- */
-export function romeDayRangeUTC(dateISO: string): {
-  start: string;
-  end: string;
-  from: string;
-  to: string;
-} {
-  const startLocal = DateTime.fromISO(`${dateISO}T00:00`, { zone: TZ });
-  const endLocal = startLocal.plus({ days: 1 });
-
-  const start = startLocal.toUTC().toISO();
-  const end = endLocal.toUTC().toISO();
-
-  return { start: start!, end: end!, from: start!, to: end! };
-}
-
-/**
- * Converte una coppia data/ora locali di Roma in un timestamp ISO UTC.
- * @param dateLocal "YYYY-MM-DD"
- * @param timeLocal "HH:mm"
- */
-export function romeToUtcISO(dateLocal: string, timeLocal: string): string {
-  const dtLocal = DateTime.fromISO(`${dateLocal}T${timeLocal}`, { zone: TZ });
-  return dtLocal.toUTC().toISO()!;
-}
-
-// ====== utilità nomi/validazioni ======
-
-/**
- * Spezza "Mario Rossi" -> { first_name: "Mario", last_name: "Rossi" }
- * Se c'è un solo token, va in first_name.
- */
-export function splitName(full: string): { first_name: string; last_name: string } {
-  const trimmed = (full || "").trim().replace(/\s+/g, " ");
-  if (!trimmed) return { first_name: "", last_name: "" };
-  const parts = trimmed.split(" ");
-  if (parts.length === 1) return { first_name: parts[0], last_name: "" };
-  return { first_name: parts.slice(0, -1).join(" "), last_name: parts.slice(-1)[0] };
-}
-
-/** Verifica se una stringa è un UUID v4 valido */
-export function isUUID(v: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-}
+export const isUUID = (v: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    v || ""
+  );
