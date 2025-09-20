@@ -2,15 +2,20 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
+
+// NB: aggiunti contact_first_name / contact_last_name che arrivano dalla function
 type Appointment = {
   id: string
-  patient_name: string
-  phone_e164: string
+  patient_name?: string
+  phone_e164?: string
   appointment_at: string
   duration_min: number
   chair: number
   status: string
+  contact_first_name?: string
+  contact_last_name?: string
 }
+
 type Contact = { id: string; first_name: string; last_name: string; phone_e164: string }
 
 const TZ = 'Europe/Rome'
@@ -117,12 +122,18 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
                   {appts.filter(a => {
                     const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
                     return a.chair === chair && startLocal === t
-                  }).map(a => (
-                    <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
-                      <div style={{ fontWeight: 600, fontSize: 12 }}>{a.patient_name}</div>
-                      <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
-                    </div>
-                  ))}
+                  }).map(a => {
+                    const fullName =
+                      (a.patient_name && a.patient_name.trim()) ||
+                      `${(a.contact_last_name || '').trim()} ${(a.contact_first_name || '').trim()}`.trim() ||
+                      '—'
+                    return (
+                      <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
+                        <div style={{ fontWeight: 600, fontSize: 12 }}>{fullName}</div>
+                        <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
+                      </div>
+                    )
+                  })}
                 </div>
               )
             })}
