@@ -1,6 +1,7 @@
-// src/pages/Agenda.tsx
+// src/ui/AgendaPage.tsx
 import React, { useEffect, useMemo, useState } from "react"
 
+/* ---------- tipi ---------- */
 type RawAppointment = {
   id: string
   chair: number | string
@@ -22,7 +23,7 @@ type RawAppointment = {
 type UiAppointment = {
   id: string
   chair: number
-  start: string            // ISO UTC
+  start: string            // ISO UTC (campo unico per posizionamento)
   durationMin: number
   name: string
   phone?: string | null
@@ -30,38 +31,18 @@ type UiAppointment = {
   contactId?: string | null
 }
 
+/* ---------- normalizzazione dati ---------- */
 const displayName = (a: RawAppointment) => {
-  const full = [a.contact?.first_name, a.contact?.last_name]
-    .filter(Boolean).join(" ").trim()
-  return (
-    a.patient_name ||
-    full ||
-    a.contact?.phone_e164 ||
-    a.phone_e164 ||
-    "Sconosciuto"
-  )
+  const full = [a.contact?.first_name, a.contact?.last_name].filter(Boolean).join(" ").trim()
+  return a.patient_name || full || a.contact?.phone_e164 || a.phone_e164 || "Sconosciuto"
 }
 
 const toUi = (a: RawAppointment): UiAppointment => {
-  const effective = a.start_at ?? a.appointment_at
-  if (!effective) {
-    // fallback durissimo: porto ora per evitare buchi visuali
-    const nowIso = new Date().toISOString()
-    return {
-      id: a.id,
-      chair: Number(a.chair ?? 1),
-      start: nowIso,
-      durationMin: Number(a.duration_min ?? 30),
-      name: displayName(a),
-      phone: a.contact?.phone_e164 ?? a.phone_e164 ?? null,
-      note: a.note ?? null,
-      contactId: a.contact_id ?? a.contact?.id ?? null,
-    }
-  }
+  const start = a.start_at ?? a.appointment_at
   return {
     id: a.id,
     chair: Number(a.chair ?? 1),
-    start: effective,
+    start: start ?? new Date().toISOString(), // fallback difensivo
     durationMin: Number(a.duration_min ?? 30),
     name: displayName(a),
     phone: a.contact?.phone_e164 ?? a.phone_e164 ?? null,
@@ -80,18 +61,15 @@ async function fetchAppointments(dayISO: string): Promise<UiAppointment[]> {
   return items.map(toUi)
 }
 
-// util
+/* ---------- util orari/roma ---------- */
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`)
-const toRomeHHmm = (isoUtc: string) => {
-  const d = new Date(isoUtc)
-  const hh = d.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome" })
-  return hh
-}
-
-// slot config
-const DAY_START_MIN = 10 * 60   // 10:00
-const DAY_END_MIN   = 20 * 60   // 20:00
-const SLOT_MIN = 15
+const toRomeHHmm = (isoUtc: string) =>
+  new Date(isoUtc).toLocaleTimeString("it-IT", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Rome",
+    hour12: false,
+  })
 
 const minutesOfDayRome = (isoUtc: string) => {
   const d = new Date(isoUtc)
@@ -99,6 +77,11 @@ const minutesOfDayRome = (isoUtc: string) => {
   const m = Number(d.toLocaleString("it-IT", { minute: "2-digit", timeZone: "Europe/Rome" }))
   return h * 60 + m
 }
+
+/* ---------- configurazione griglia ---------- */
+const DAY_START_MIN = 10 * 60 // 10:00
+const DAY_END_MIN   = 20 * 60 // 20:00
+const SLOT_MIN      = 15
 
 const timeGrid = (stepMin: number) => {
   const out: string[] = []
@@ -109,13 +92,74 @@ const timeGrid = (stepMin: number) => {
   return out
 }
 
+/* ---------- layout con gestione sovrapposizioni (lane) ---------- */
+type Positioned = UiAppointment & {
+  topMin: number     // distanza dall'inizio giornata (minuti)
+  heightMin: number  // durata (minuti)
+  lane: number       // corsia assegnata (0..laneCount-1)
+  laneCount: number  // numero corsie del cluster
+}
+
+// Algoritmo: sweep-line per cluster di appuntamenti che si sovrappongono.
+// Ogni cluster ottiene n corsie. Ogni appuntamento ha lane e laneCount.
+function layoutWithLanes(items: UiAppointment[]): Positioned[] {
+  // ordina per inizio
+  const sorted = [...items].sort((a, b) => {
+    const ma = minutesOfDayRome(a.start), mb = minutesOfDayRome(b.start)
+    return ma - mb
+  })
+
+  type Active = { appt: Positioned, endMin: number }
+  const result: Positioned[] = []
+  let active: Active[] = []
+
+  const flushCluster = () => {
+    if (active.length === 0) return
+    // calcola quante corsie usate max
+    const lanes = Math.max(...active.map(a => a.appt.lane)) + 1
+    active.forEach(a => { a.appt.laneCount = lanes; result.push(a.appt) })
+    active = []
+  }
+
+  for (const appt of sorted) {
+    const startMin = minutesOfDayRome(appt.start)
+    const heightMin = Math.max(SLOT_MIN, appt.durationMin || SLOT_MIN)
+    const endMin = startMin + heightMin
+
+    // chiudi cluster se questo non si sovrappone al precedente attivo più “tardo”
+    const latestEnd = active.reduce((mx, a) => Math.max(mx, a.endMin), -1)
+    if (active.length > 0 && startMin >= latestEnd) {
+      flushCluster()
+    }
+
+    // assegna la lane più bassa libera
+    const used = new Set(active.map(a => a.appt.lane))
+    let lane = 0
+    while (used.has(lane)) lane++
+
+    const positioned: Positioned = {
+      ...appt,
+      topMin: Math.max(0, startMin - DAY_START_MIN),
+      heightMin,
+      lane,
+      laneCount: 1, // valorizzata a fine cluster
+    }
+
+    // rimuovi da active quelli che sono già finiti prima dell'inizio corrente
+    active = active.filter(a => a.endMin > startMin)
+    active.push({ appt: positioned, endMin })
+  }
+
+  // flush finale
+  flushCluster()
+  return result
+}
+
+/* ---------- componente pagina ---------- */
 export function AgendaPage() {
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const now = new Date()
-    const yyyy = now.getFullYear()
-    const mm = pad2(now.getMonth() + 1)
-    const dd = pad2(now.getDate())
-    return `${yyyy}-${mm}-${dd}`
+    return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`
   })
   const [items, setItems] = useState<UiAppointment[]>([])
   const [loading, setLoading] = useState(false)
@@ -123,8 +167,7 @@ export function AgendaPage() {
 
   useEffect(() => {
     let mounted = true
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     fetchAppointments(selectedDate)
       .then(list => { if (mounted) setItems(list) })
       .catch(e => { if (mounted) setError(String(e?.message || e)) })
@@ -132,8 +175,16 @@ export function AgendaPage() {
     return () => { mounted = false }
   }, [selectedDate])
 
-  const chair1 = useMemo(() => items.filter(i => i.chair === 1), [items])
-  const chair2 = useMemo(() => items.filter(i => i.chair === 2), [items])
+  const chair1 = useMemo(() => layoutWithLanes(items.filter(i => i.chair === 1)), [items])
+  const chair2 = useMemo(() => layoutWithLanes(items.filter(i => i.chair === 2)), [items])
+
+  // calcolo altezza contenitore: fine più tardi tra entrambe le poltrone
+  const lastEndMin = Math.max(
+    ...[...chair1, ...chair2].map(p => p.topMin + p.heightMin),
+    DAY_END_MIN - DAY_START_MIN
+  )
+  const containerHeightPx = lastEndMin // 1px = 1min (semplice)
+
   const grid = useMemo(() => timeGrid(SLOT_MIN), [])
 
   return (
@@ -154,19 +205,10 @@ export function AgendaPage() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        {/* Poltrona 1 */}
-        <Column
-          title="Poltrona 1"
-          items={chair1}
-        />
-        {/* Poltrona 2 */}
-        <Column
-          title="Poltrona 2"
-          items={chair2}
-        />
+        <Column title="Poltrona 1" items={chair1} containerHeightPx={containerHeightPx} />
+        <Column title="Poltrona 2" items={chair2} containerHeightPx={containerHeightPx} />
       </div>
 
-      {/* Griglia orari come legenda laterale opzionale */}
       <div style={{ marginTop: 16, opacity: 0.7 }}>
         <small>Fasce orarie ({SLOT_MIN} min): {grid.join(" • ")}</small>
       </div>
@@ -174,28 +216,25 @@ export function AgendaPage() {
   )
 }
 
-function Column({ title, items }: { title: string; items: UiAppointment[] }) {
-  // ordina per orario effettivo (Roma)
-  const sorted = [...items].sort((a, b) => {
-    const ma = minutesOfDayRome(a.start)
-    const mb = minutesOfDayRome(b.start)
-    return ma - mb
-  })
-
+/* ---------- componenti di colonna e card ---------- */
+function Column({ title, items, containerHeightPx }: { title: string; items: Positioned[]; containerHeightPx: number }) {
   return (
     <div>
       <h3 style={{ marginBottom: 8 }}>{title}</h3>
-      <div style={{
-        border: "1px dashed #ccc",
-        borderRadius: 8,
-        padding: 8,
-        minHeight: 560,
-        position: "relative",
-      }}>
-        {sorted.map(appt => (
+      <div
+        style={{
+          border: "1px dashed #ccc",
+          borderRadius: 8,
+          padding: 8,
+          minHeight: containerHeightPx,
+          position: "relative",
+        }}
+      >
+        {items.map(appt => (
           <Card key={appt.id} appt={appt} />
         ))}
-        {sorted.length === 0 && (
+
+        {items.length === 0 && (
           <div style={{ opacity: 0.5, textAlign: "center", padding: 16 }}>
             Nessun appuntamento
           </div>
@@ -205,32 +244,30 @@ function Column({ title, items }: { title: string; items: UiAppointment[] }) {
   )
 }
 
-function Card({ appt }: { appt: UiAppointment }) {
-  const topMin = Math.max(0, minutesOfDayRome(appt.start) - DAY_START_MIN)
-  const heightMin = Math.max(SLOT_MIN, appt.durationMin || SLOT_MIN)
-
-  // 1px = 1min (semplice); container minHeight ~ 560px per 10:00-20:00
-  const px = (m: number) => m // se vuoi più compatto, usa m*0.8
+function Card({ appt }: { appt: Positioned }) {
+  // corsie: dividiamo lo spazio orizzontale tra appuntamenti che si sovrappongono
+  const gap = 6 // px
+  const widthPct = (100 - (appt.laneCount - 1) * (gap / 2)) / appt.laneCount
+  const leftPct = appt.lane * widthPct + (appt.lane * (gap / 2) * 100) / 100 // piccolo gap visivo
 
   return (
     <div
       style={{
         position: "absolute",
-        left: 8,
-        right: 8,
-        top: px(topMin),
-        height: px(heightMin),
+        left: `${leftPct}%`,
+        width: `${widthPct}%`,
+        top: appt.topMin,
+        height: appt.heightMin,
         background: "#e6f7eb",
         border: "1px solid #bfe3c8",
         borderRadius: 8,
         padding: 8,
         overflow: "hidden",
+        boxSizing: "border-box",
       }}
       title={`${toRomeHHmm(appt.start)} • ${appt.durationMin} min`}
     >
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-        {appt.name}
-      </div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{appt.name}</div>
       <div style={{ fontSize: 12 }}>
         {toRomeHHmm(appt.start)} • {appt.durationMin} min
       </div>
