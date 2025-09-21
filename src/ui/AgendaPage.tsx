@@ -165,6 +165,130 @@ function TimeRail() {
   )
 }
 
+/* ---------- MODALE FALLBACK (se non esiste la tua) ---------- */
+type CreatePayload = {
+  dentist_id: string
+  chair: number
+  date: string        // YYYY-MM-DD
+  time: string        // HH:mm
+  duration_min: number
+  patient_name?: string | null
+  note?: string | null
+  contact_id?: string | null
+  phone_e164?: string | null
+}
+
+function CreateModal({
+  visible,
+  onClose,
+  onSaved,
+  date,
+  chair,
+  timeHHmm,
+}: {
+  visible: boolean
+  onClose: () => void
+  onSaved: () => void
+  date: string
+  chair: 1 | 2
+  timeHHmm: string
+}) {
+  const [name, setName] = useState("")
+  const [duration, setDuration] = useState(30)
+  const [note, setNote] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (visible) {
+      setName("")
+      setDuration(30)
+      setNote("")
+      setErr(null)
+    }
+  }, [visible, chair, timeHHmm])
+
+  if (!visible) return null
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true); setErr(null)
+    try {
+      const payload: CreatePayload = {
+        dentist_id: "main",
+        chair,
+        date,
+        time: timeHHmm,
+        duration_min: duration,
+        patient_name: name || null,
+        note: note || null,
+      }
+      const res = await fetch("/.netlify/functions/appointments-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || json.error) {
+        throw new Error(json.error || `HTTP ${res.status}`)
+      }
+      onSaved()
+      onClose()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.25)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: "#fff", borderRadius: 8, padding: 16, width: 420, boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 style={{ marginTop: 0 }}>Crea nuovo appuntamento</h3>
+        <form onSubmit={onSubmit}>
+          <div style={{ marginBottom: 8 }}>Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b></div>
+
+          <label style={{ display: "block", marginBottom: 8 }}>
+            Nome paziente (opzionale)
+            <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: "100%" }} />
+          </label>
+
+          <label style={{ display: "block", marginBottom: 8 }}>
+            Durata
+            <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+              <option value={15}>15 min</option>
+              <option value={30}>30 min</option>
+              <option value={45}>45 min</option>
+              <option value={60}>60 min</option>
+            </select>
+          </label>
+
+          <label style={{ display: "block", marginBottom: 8 }}>
+            Note
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} style={{ width: "100%" }} />
+          </label>
+
+          {err && <div style={{ color: "crimson", marginBottom: 8 }}>{err}</div>}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button type="button" onClick={onClose} disabled={saving}>Annulla</button>
+            <button type="submit" disabled={saving}>{saving ? "Salvo…" : "Salva"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 /* ---------- colonna con slot + card ---------- */
 function Column({
   title,
@@ -177,7 +301,6 @@ function Column({
   containerHeightPx: number
   onSlotClick: (hhmm: string) => void
 }) {
-  // slot cliccabili ogni 15'
   const slots = useMemo(() => {
     const out: { top: number; label: string }[] = []
     for (let m = DAY_START_MIN; m < DAY_END_MIN; m += SLOT_MIN) {
@@ -215,7 +338,7 @@ function Column({
               border: "1px dashed rgba(0,0,0,0.06)",
               borderRadius: 6,
               cursor: "pointer",
-              zIndex: 1, // sotto le card per non coprirne il click
+              zIndex: 1, // sotto le card
             }}
             aria-label={`Crea appuntamento alle ${s.label}`}
           />
@@ -278,6 +401,11 @@ export function AgendaPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // stato modale fallback
+  const [fallbackModal, setFallbackModal] = useState<{open:boolean, chair:1|2, timeHHmm:string}>({
+    open: false, chair: 1, timeHHmm: "10:00"
+  })
+
   useEffect(() => {
     let mounted = true
     setLoading(true); setError(null)
@@ -301,10 +429,9 @@ export function AgendaPage() {
     fetchAppointments(selectedDate).then(setItems).catch(console.error)
   }
 
-  // collega gli slot al TUO popup/modale esistente
+  // collega slot al TUO popup; se non esiste → usa modale fallback
   const openNewAt = (chair: 1 | 2, hhmm: string) => {
     const w: any = window
-    // prova nomi globali comuni del tuo progetto
     if (typeof w.openCreateAppointment === "function") {
       w.openCreateAppointment({ chair, time: hhmm, date: selectedDate, onSaved: reload })
       return
@@ -317,8 +444,8 @@ export function AgendaPage() {
       w.appointmentNew({ chair, time: hhmm, date: selectedDate, onSaved: reload })
       return
     }
-    // fallback: evento che puoi intercettare nel tuo codice legacy
-    window.dispatchEvent(new CustomEvent("open-new-appt", { detail: { chair, time: hhmm, date: selectedDate } }))
+    // fallback locale
+    setFallbackModal({ open: true, chair, timeHHmm: hhmm })
   }
 
   return (
@@ -353,6 +480,16 @@ export function AgendaPage() {
           onSlotClick={(hhmm) => openNewAt(2, hhmm)}
         />
       </div>
+
+      {/* Modale fallback, usata solo se non troviamo funzioni globali */}
+      <CreateModal
+        visible={fallbackModal.open}
+        onClose={() => setFallbackModal(m => ({ ...m, open: false }))}
+        onSaved={reload}
+        date={selectedDate}
+        chair={fallbackModal.chair}
+        timeHHmm={fallbackModal.timeHHmm}
+      />
     </div>
   )
 }
