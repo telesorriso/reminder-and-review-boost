@@ -132,6 +132,222 @@ function TimeRail() {
   )
 }
 
+/* ---------- modale nuovo appuntamento ---------- */
+type CreatePayload = {
+  dentist_id: string
+  chair: number
+  date: string
+  time: string
+  duration_min: number
+  contact_id?: string | null
+  patient_name?: string | null
+  phone_e164?: string | null
+  note?: string | null
+}
+
+function useDebounced<T>(value: T, delay = 250) {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setV(value), delay)
+    return () => clearTimeout(id)
+  }, [value, delay])
+  return v
+}
+
+function CreateModal({
+  visible, onClose, onSaved, date, chair, timeHHmm,
+}: {
+  visible: boolean
+  onClose: () => void
+  onSaved: () => void
+  date: string
+  chair: 1 | 2
+  timeHHmm: string
+}) {
+  const [mode, setMode] = useState<"contact"|"manual">("contact")
+  const [query, setQuery] = useState("")
+  const debouncedQ = useDebounced(query)
+  const [results, setResults] = useState<Contact[]>([])
+  const [selected, setSelected] = useState<Contact | null>(null)
+  const [loadingQ, setLoadingQ] = useState(false)
+  const [name, setName] = useState("")
+  const [phone, setPhone] = useState("")
+  const [duration, setDuration] = useState(30)
+  const [note, setNote] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!visible) return
+    setErr(null)
+    setResults([])
+    setSelected(null)
+    setQuery("")
+    setName("")
+    setPhone("")
+    setNote("")
+    setDuration(30)
+    setMode("contact")
+  }, [visible, chair, timeHHmm])
+
+  useEffect(() => {
+    if (!visible || mode !== "contact") return
+    const q = debouncedQ.trim()
+    if (!q) { setResults([]); return }
+    let cancel = false
+    ;(async () => {
+      setLoadingQ(true)
+      try {
+        const r = await fetch(`/.netlify/functions/contacts-list?q=${encodeURIComponent(q)}`)
+        const j = await r.json()
+        if (!cancel) setResults(Array.isArray(j.items) ? j.items as Contact[] : [])
+      } catch {
+        if (!cancel) setResults([])
+      } finally {
+        if (!cancel) setLoadingQ(false)
+      }
+    })()
+    return () => { cancel = true }
+  }, [debouncedQ, mode, visible])
+
+  if (!visible) return null
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true); setErr(null)
+    try {
+      const payload: CreatePayload = {
+        dentist_id: "main",
+        chair,
+        date,
+        time: timeHHmm,
+        duration_min: duration,
+        note: note || null,
+      }
+      if (mode === "contact") {
+        if (!selected) throw new Error("Seleziona un contatto")
+        payload.contact_id = selected.id
+      } else {
+        payload.patient_name = name || null
+        payload.phone_e164 = phone || null
+        if (!payload.patient_name && !payload.phone_e164) {
+          throw new Error("Inserisci almeno nome o telefono")
+        }
+      }
+      const res = await fetch("/.netlify/functions/appointments-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`)
+      onSaved()
+      onClose()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      onClick={onClose}
+    >
+      <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: 560, boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        <h3 style={{ marginTop: 0 }}>Crea nuovo appuntamento</h3>
+
+        <div style={{ marginBottom: 8 }}>Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b></div>
+
+        <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
+          <label><input type="radio" checked={mode==="contact"} onChange={()=>setMode("contact")} /> Usa contatto</label>
+          <label><input type="radio" checked={mode==="manual"} onChange={()=>setMode("manual")} /> Inserisci manualmente</label>
+        </div>
+
+        <form onSubmit={onSubmit}>
+          {mode === "contact" ? (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ position: "relative" }}>
+                <input
+                  placeholder="Cerca contatto (nome, cognome o telefono)"
+                  value={query}
+                  onChange={(e)=>{ setQuery(e.target.value); setSelected(null) }}
+                  style={{ width: "100%", paddingRight: 72 }}
+                />
+                <span style={{ position:"absolute", right: 8, top: 6, fontSize:12, color:"#666" }}>
+                  {loadingQ ? "Cerco…" : selected ? "Selezionato" : "Scrivi per cercare"}
+                </span>
+              </div>
+              {!!results.length && !selected && (
+                <div style={{ border:"1px solid #eee", borderRadius:6, marginTop:6, maxHeight:200, overflow:"auto" }}>
+                  {results.map(c => {
+                    const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"
+                    return (
+                      <button
+                        type="button"
+                        key={c.id}
+                        onClick={()=>setSelected(c)}
+                        style={{ display:"flex", width:"100%", textAlign:"left", padding:"8px 10px", borderBottom:"1px solid #f3f3f3", background:"#fff", cursor:"pointer" }}
+                      >
+                        <div style={{ flex:1 }}>{name}</div>
+                        <div style={{ color:"#666" }}>{c.phone_e164 || ""}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {selected && (
+                <div style={{ marginTop: 6, padding: 8, background:"#f7f7f7", borderRadius:6, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <div>
+                    <div style={{ fontWeight:600 }}>{[selected.first_name, selected.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"}</div>
+                    <div style={{ fontSize:12, color:"#666" }}>{selected.phone_e164 || ""}</div>
+                  </div>
+                  <button type="button" onClick={()=>setSelected(null)}>Cambia</button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Nome paziente
+                <input value={name} onChange={(e)=>setName(e.target.value)} style={{ width: "100%" }} />
+              </label>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Telefono (E.164, es. +39333...)
+                <input value={phone} onChange={(e)=>setPhone(e.target.value)} style={{ width: "100%" }} />
+              </label>
+            </div>
+          )}
+
+          <div style={{ display:"flex", gap:12, marginBottom: 12 }}>
+            <label>
+              Durata{" "}
+              <select value={duration} onChange={(e)=>setDuration(Number(e.target.value))}>
+                <option value={15}>15 min</option>
+                <option value={30}>30 min</option>
+                <option value={45}>45 min</option>
+                <option value={60}>60 min</option>
+              </select>
+            </label>
+            <label style={{ flex:1 }}>
+              Note
+              <textarea value={note} onChange={(e)=>setNote(e.target.value)} rows={3} style={{ width: "100%" }} />
+            </label>
+          </div>
+
+          {err && <div style={{ color:"crimson", marginBottom: 8 }}>{err}</div>}
+
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+            <button type="button" onClick={onClose} disabled={saving}>Annulla</button>
+            <button type="submit" disabled={saving}>{saving ? "Salvo…" : "Salva"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 /* ---------- colonne & card ---------- */
 function Column({
   title, items, containerHeightPx, onSlotClick,
@@ -237,6 +453,7 @@ export function AgendaPage() {
   const [items, setItems] = useState<UiAppointment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [modal, setModal] = useState<{open:boolean, chair:1|2, timeHHmm:string}>({ open:false, chair:1, timeHHmm:"10:00" })
 
   useEffect(() => {
     let live = true
@@ -255,6 +472,22 @@ export function AgendaPage() {
     DAY_END_MIN - DAY_START_MIN
   )
 
+  const reload = () => { fetchAppointments(selectedDate).then(setItems).catch(console.error) }
+
+  const openNewAt = (chair:1|2, hhmm:string) => {
+    const w:any = window
+    if (typeof w.openCreateAppointment === "function") {
+      w.openCreateAppointment({ chair, time: hhmm, date: selectedDate, onSaved: reload }); return
+    }
+    if (typeof w.openNewAppointment === "function") {
+      w.openNewAppointment(chair, hhmm, selectedDate, reload); return
+    }
+    if (typeof w.appointmentNew === "function") {
+      w.appointmentNew({ chair, time: hhmm, date: selectedDate, onSaved: reload }); return
+    }
+    setModal({ open:true, chair, timeHHmm: hhmm })
+  }
+
   return (
     <div style={{ padding: 16 }}>
       <h1 style={{ marginBottom: 8 }}>V Dental – Agenda &amp; Logs</h1>
@@ -267,9 +500,18 @@ export function AgendaPage() {
 
       <div style={{ display:"grid", gridTemplateColumns:"64px 1fr 1fr", gap:16 }}>
         <TimeRail />
-        <Column title="Poltrona 1" items={chair1} containerHeightPx={containerHeightPx} onSlotClick={()=>{}} />
-        <Column title="Poltrona 2" items={chair2} containerHeightPx={containerHeightPx} onSlotClick={()=>{}} />
+        <Column title="Poltrona 1" items={chair1} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(1, hhmm)} />
+        <Column title="Poltrona 2" items={chair2} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(2, hhmm)} />
       </div>
+
+      <CreateModal
+        visible={modal.open}
+        onClose={()=>setModal(m=>({...m, open:false}))}
+        onSaved={reload}
+        date={selectedDate}
+        chair={modal.chair}
+        timeHHmm={modal.timeHHmm}
+      />
     </div>
   )
 }
