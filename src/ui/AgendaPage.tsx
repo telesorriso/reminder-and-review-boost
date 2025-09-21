@@ -1,13 +1,5 @@
+// src/ui/AgendaPage.tsx
 import React, { useEffect, useMemo, useState } from "react"
-
-/* ---------- auth helpers ---------- */
-function getAdminToken(): string {
-  try { return localStorage.getItem("adminToken") || "" } catch { return "" }
-}
-function authHeaders(): HeadersInit {
-  const t = getAdminToken()
-  return t ? { "x-api-key": t } : {}
-}
 
 /* ---------- tipi backend ---------- */
 type RawAppointment = {
@@ -27,6 +19,7 @@ type RawAppointment = {
     phone_e164?: string | null
   } | null
 }
+
 type UiAppointment = {
   id: string
   chair: number
@@ -37,6 +30,7 @@ type UiAppointment = {
   note?: string | null
   contactId?: string | null
 }
+
 type Contact = {
   id: string
   first_name?: string | null
@@ -47,12 +41,28 @@ type Contact = {
 /* ---------- utils ---------- */
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`)
 const toRomeHHmm = (isoUtc: string) =>
-  new Date(isoUtc).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome", hour12: false })
+  new Date(isoUtc).toLocaleTimeString("it-IT", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Rome",
+    hour12: false,
+  })
 
 const minutesOfDayRome = (isoUtc: string) => {
   const d = new Date(isoUtc)
-  const h = Number(d.toLocaleString("it-IT", { hour: "2-digit", hour12: false, timeZone: "Europe/Rome" }))
-  const m = Number(d.toLocaleString("it-IT", { minute: "2-digit", timeZone: "Europe/Rome" }))
+  const h = Number(
+    d.toLocaleString("it-IT", {
+      hour: "2-digit",
+      hour12: false,
+      timeZone: "Europe/Rome",
+    }),
+  )
+  const m = Number(
+    d.toLocaleString("it-IT", {
+      minute: "2-digit",
+      timeZone: "Europe/Rome",
+    }),
+  )
   return h * 60 + m
 }
 
@@ -60,6 +70,7 @@ const displayName = (a: RawAppointment) => {
   const full = [a.contact?.first_name, a.contact?.last_name].filter(Boolean).join(" ").trim()
   return a.patient_name || full || a.contact?.phone_e164 || a.phone_e164 || "Sconosciuto"
 }
+
 const toUi = (a: RawAppointment): UiAppointment => {
   const start = a.start_at ?? a.appointment_at
   return {
@@ -75,9 +86,7 @@ const toUi = (a: RawAppointment): UiAppointment => {
 }
 
 async function fetchAppointments(dayISO: string): Promise<UiAppointment[]> {
-  const r = await fetch(`/.netlify/functions/appointments-by-day?date=${dayISO}`, {
-    headers: { ...authHeaders() },
-  })
+  const r = await fetch(`/.netlify/functions/appointments-by-day?date=${dayISO}`)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   const j = await r.json()
   const items: RawAppointment[] = j.items ?? []
@@ -96,36 +105,37 @@ type Positioned = UiAppointment & {
   laneCount: number
 }
 
-/** calcola posizioni e colonne (lane) degli appuntamenti */
 function layoutWithLanes(items: UiAppointment[]): Positioned[] {
-  const sorted = [...items].sort((a, b) => minutesOfDayRome(a.start) - minutesOfDayRome(b.start))
+  const sorted = [...items].sort(
+    (a, b) => minutesOfDayRome(a.start) - minutesOfDayRome(b.start),
+  )
   type Active = { appt: Positioned; endMin: number }
   const out: Positioned[] = []
   let active: Active[] = []
-
   const flush = () => {
     if (!active.length) return
     const lanes = Math.max(...active.map(a => a.appt.lane)) + 1
-    active.forEach(a => { a.appt.laneCount = lanes; out.push(a.appt) })
+    active.forEach(a => {
+      a.appt.laneCount = lanes
+      out.push(a.appt)
+    })
     active = []
   }
-
   for (const appt of sorted) {
     const startMin = minutesOfDayRome(appt.start)
     const heightMin = Math.max(SLOT_MIN, appt.durationMin || SLOT_MIN)
     const endMin = startMin + heightMin
     const latestEnd = active.reduce((m, a) => Math.max(m, a.endMin), -1)
     if (active.length && startMin >= latestEnd) flush()
-
     const used = new Set(active.map(a => a.appt.lane))
-    let lane = 0; while (used.has(lane)) lane++
-
+    let lane = 0
+    while (used.has(lane)) lane++
     const positioned: Positioned = {
       ...appt,
       topMin: Math.max(0, startMin - DAY_START_MIN),
       heightMin,
       lane,
-      laneCount: 1
+      laneCount: 1,
     }
     active = active.filter(a => a.endMin > startMin)
     active.push({ appt: positioned, endMin })
@@ -134,36 +144,17 @@ function layoutWithLanes(items: UiAppointment[]): Positioned[] {
   return out
 }
 
-/* ---------- time rail ---------- */
-function TimeRail() {
-  const labels: string[] = []
-  for (let m = DAY_START_MIN; m <= DAY_END_MIN; m += SLOT_MIN) {
-    const hh = String(Math.floor(m / 60)).padStart(2, "0")
-    const mm = String(m % 60).padStart(2, "0")
-    labels.push(`${hh}:${mm}`)
-  }
-  return (
-    <div style={{ position: "relative", width: 64 }}>
-      {labels.map((t, i) => (
-        <div
-          key={t}
-          style={{
-            position: "absolute",
-            top: i * SLOT_MIN,
-            transform: "translateY(-50%)",
-            fontSize: 12,
-            color: "#666"
-          }}
-        >
-          {t}
-        </div>
-      ))}
-      <div style={{ height: (DAY_END_MIN - DAY_START_MIN) }} />
-    </div>
-  )
+/* ---------- debounce helper ---------- */
+function useDebounced<T>(value: T, delay = 250) {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setV(value), delay)
+    return () => clearTimeout(id)
+  }, [value, delay])
+  return v
 }
 
-/* ---------- MODALE: contatti + manuale ---------- */
+/* ---------- MODALE CREAZIONE ---------- */
 type CreatePayload = {
   dentist_id: string
   chair: number
@@ -174,15 +165,6 @@ type CreatePayload = {
   patient_name?: string | null
   phone_e164?: string | null
   note?: string | null
-}
-
-function useDebounced<T>(value: T, delay = 250) {
-  const [v, setV] = useState(value)
-  useEffect(() => {
-    const id = setTimeout(() => setV(value), delay)
-    return () => clearTimeout(id)
-  }, [value, delay])
-  return v
 }
 
 function CreateModal({
@@ -230,13 +212,12 @@ function CreateModal({
   useEffect(() => {
     if (!visible || mode !== "contact") return
     const q = debouncedQ.trim()
-    if (q.length < 2) { setResults([]); return }            // soglia minima
+    if (!q) { setResults([]); return }
     let cancel = false
     ;(async () => {
       setLoadingQ(true)
       try {
-        const url = `/.netlify/functions/contacts-list?q=${encodeURIComponent(q)}`
-        const r = await fetch(url, { headers: { ...authHeaders() } })
+        const r = await fetch(`/.netlify/functions/contacts-list?q=${encodeURIComponent(q)}`)
         const j = await r.json()
         if (!cancel) setResults(Array.isArray(j.items) ? (j.items as Contact[]) : [])
       } catch {
@@ -274,7 +255,7 @@ function CreateModal({
       }
       const res = await fetch("/.netlify/functions/appointments-create", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       })
       const json = await res.json().catch(() => ({}))
@@ -290,16 +271,10 @@ function CreateModal({
 
   return (
     <div
-      style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.25)",
-        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000
-      }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
       onClick={onClose}
     >
-      <div
-        style={{ background: "#fff", borderRadius: 8, padding: 16, width: 560, boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }}
-        onClick={e => e.stopPropagation()}
-      >
+      <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: 560, boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
         <h3 style={{ marginTop: 0 }}>Crea nuovo appuntamento</h3>
 
         <div style={{ marginBottom: 8 }}>Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b></div>
@@ -324,7 +299,7 @@ function CreateModal({
                 </span>
               </div>
               {!!results.length && !selected && (
-                <div style={{ border:"1px solid #eee", borderRadius:6, marginTop:6, maxHeight:200, overflow:"auto", background:"#fff" }}>
+                <div style={{ border:"1px solid #eee", borderRadius:6, marginTop:6, maxHeight:200, overflow:"auto" }}>
                   {results.map(c => {
                     const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"
                     return (
@@ -332,10 +307,7 @@ function CreateModal({
                         type="button"
                         key={c.id}
                         onClick={()=>setSelected(c)}
-                        style={{
-                          display:"flex", width:"100%", textAlign:"left", padding:"8px 10px",
-                          borderBottom:"1px solid #f3f3f3", background:"#fff", cursor:"pointer"
-                        }}
+                        style={{ display:"flex", width:"100%", textAlign:"left", padding:"8px 10px", borderBottom:"1px solid #f3f3f3", background:"#fff", cursor:"pointer" }}
                       >
                         <div style={{ flex:1 }}>{name}</div>
                         <div style={{ color:"#666" }}>{c.phone_e164 || ""}</div>
@@ -347,9 +319,7 @@ function CreateModal({
               {selected && (
                 <div style={{ marginTop: 6, padding: 8, background:"#f7f7f7", borderRadius:6, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                   <div>
-                    <div style={{ fontWeight:600 }}>
-                      {[selected.first_name, selected.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"}
-                    </div>
+                    <div style={{ fontWeight:600 }}>{[selected.first_name, selected.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"}</div>
                     <div style={{ fontSize:12, color:"#666" }}>{selected.phone_e164 || ""}</div>
                   </div>
                   <button type="button" onClick={()=>setSelected(null)}>Cambia</button>
@@ -397,11 +367,39 @@ function CreateModal({
   )
 }
 
-/* ---------- colonne & card ---------- */
-function Column({
-  items, containerHeightPx, onSlotClick,
-}: { items:Positioned[]; containerHeightPx:number; onSlotClick:(hhmm:string)=>void }) {
+/* ---------- CARD & COLONNA ---------- */
+function Card({ appt }: { appt: Positioned }) {
+  const gap = 6
+  const widthPct = (100 - (appt.laneCount - 1) * (gap / 2)) / appt.laneCount
+  const leftPct = appt.lane * widthPct + (appt.lane * (gap / 2) * 100) / 100
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${leftPct}%`,
+        width: `${widthPct}%`,
+        top: appt.topMin,
+        height: appt.heightMin,
+        background: "#e6f7eb",
+        border: "1px solid #bfe3c8",
+        borderRadius: 8,
+        padding: 8,
+        overflow: "hidden",
+        boxSizing: "border-box",
+        zIndex: 2,
+      }}
+      title={`${toRomeHHmm(appt.start)} • ${appt.durationMin} min`}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{appt.name}</div>
+      <div style={{ fontSize: 12 }}>{toRomeHHmm(appt.start)} • {appt.durationMin} min</div>
+      {appt.note && <div style={{ fontSize: 12, opacity: 0.8 }}>{appt.note}</div>}
+    </div>
+  )
+}
 
+function Column({
+  title, items, containerHeightPx, onSlotClick,
+}: { title:string; items:Positioned[]; containerHeightPx:number; onSlotClick:(hhmm:string)=>void }) {
   const slots = useMemo(() => {
     const out: { top:number; label:string }[] = []
     for (let m = DAY_START_MIN; m < DAY_END_MIN; m += SLOT_MIN) {
@@ -410,73 +408,28 @@ function Column({
     }
     return out
   }, [])
-
   return (
-    <div
-      style={{
-        border:"1px dashed #ccc", borderRadius: 8, padding: 8,
-        minHeight: containerHeightPx, position:"relative", overflow: "hidden"
-      }}
-    >
-      {/* clic sugli slot */}
-      {slots.map(s => (
-        <button
-          key={s.label}
-          onClick={() => onSlotClick(s.label)}
-          title={`Nuovo alle ${s.label}`}
-          style={{
-            position:"absolute", left:4, right:4, top:s.top, height:SLOT_MIN,
-            background:"transparent", border:"1px dashed rgba(0,0,0,0.06)", borderRadius:6,
-            cursor:"pointer", zIndex:1
-          }}
-          aria-label={`Crea appuntamento alle ${s.label}`}
-        />
-      ))}
-
-      {/* appuntamenti */}
-      {items.map(appt => <Card key={appt.id} appt={appt} />)}
-      {items.length === 0 && (
-        <div style={{ opacity:0.5, textAlign:"center", padding:16 }}>
-          Clicca uno slot per creare un appuntamento
-        </div>
-      )}
+    <div>
+      <h3 style={{ marginBottom: 8 }}>{title}</h3>
+      <div style={{ border:"1px dashed #ccc", borderRadius: 8, padding: 8, minHeight: containerHeightPx, position:"relative" }}>
+        {/* Grid “cliccabile” */}
+        {slots.map(s => (
+          <button
+            key={s.label}
+            onClick={() => onSlotClick(s.label)}
+            title={`Nuovo alle ${s.label}`}
+            style={{ position:"absolute", left:4, right:4, top:s.top, height:SLOT_MIN, background:"transparent", border:"1px dashed rgba(0,0,0,0.06)", borderRadius:6, cursor:"pointer", zIndex:1 }}
+            aria-label={`Crea appuntamento alle ${s.label}`}
+          />
+        ))}
+        {items.map(appt => <Card key={appt.id} appt={appt} />)}
+        {items.length === 0 && <div style={{ opacity:0.5, textAlign:"center", padding:16 }}>Clicca uno slot per creare un appuntamento</div>}
+      </div>
     </div>
   )
 }
 
-function Card({ appt }: { appt:Positioned }) {
-  const GAP = 1.5; // percentuale di gap tra colonne
-  const widthPct = (100 - GAP * (appt.laneCount - 1)) / appt.laneCount
-  const leftPct  = appt.lane * (widthPct + GAP)
-
-  return (
-    <div
-      style={{
-        position:"absolute",
-        left:`${leftPct}%`,
-        width:`${widthPct}%`,
-        top: appt.topMin,
-        height: appt.heightMin,
-        background:"#e6f7eb",
-        border:"1px solid #bfe3c8",
-        borderRadius:8,
-        padding:8,
-        overflow:"hidden",
-        boxSizing:"border-box",
-        zIndex:2,
-        whiteSpace: "nowrap",
-        textOverflow: "ellipsis"
-      }}
-      title={`${toRomeHHmm(appt.start)} • ${appt.durationMin} min`}
-    >
-      <div style={{ fontWeight:600, marginBottom:4, overflow:"hidden", textOverflow:"ellipsis" }}>{appt.name}</div>
-      <div style={{ fontSize:12 }}>{toRomeHHmm(appt.start)} • {appt.durationMin} min</div>
-      {appt.note && <div style={{ fontSize:12, opacity:0.8 }}>{appt.note}</div>}
-    </div>
-  )
-}
-
-/* ---------- pagina ---------- */
+/* ---------- PAGINA ---------- */
 export function AgendaPage() {
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const now = new Date()
@@ -485,6 +438,7 @@ export function AgendaPage() {
   const [items, setItems] = useState<UiAppointment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
   const [modal, setModal] = useState<{open:boolean, chair:1|2, timeHHmm:string}>({ open:false, chair:1, timeHHmm:"10:00" })
 
   useEffect(() => {
@@ -505,21 +459,7 @@ export function AgendaPage() {
   )
 
   const reload = () => { fetchAppointments(selectedDate).then(setItems).catch(console.error) }
-
-  // slot → prova funzioni legacy, se non ci sono apri la nostra modale
-  const openNewAt = (chair:1|2, hhmm:string) => {
-    const w:any = window
-    if (typeof w.openCreateAppointment === "function") {
-      w.openCreateAppointment({ chair, time: hhmm, date: selectedDate, onSaved: reload }); return
-    }
-    if (typeof w.openNewAppointment === "function") {
-      w.openNewAppointment(chair, hhmm, selectedDate, reload); return
-    }
-    if (typeof w.appointmentNew === "function") {
-      w.appointmentNew({ chair, time: hhmm, date: selectedDate, onSaved: reload }); return
-    }
-    setModal({ open:true, chair, timeHHmm: hhmm })
-  }
+  const openNewAt = (chair:1|2, hhmm:string) => setModal({ open:true, chair, timeHHmm: hhmm })
 
   return (
     <div style={{ padding: 16 }}>
@@ -531,18 +471,24 @@ export function AgendaPage() {
         {error && <span style={{ color:"crimson" }}>{error}</span>}
       </div>
 
-      {/* Header riga titoli per allineare perfettamente TimeRail e colonne */}
-      <div style={{ display:"grid", gridTemplateColumns:"64px 1fr 1fr", gap:16, alignItems:"end", marginBottom:4 }}>
-        <div />
-        <div style={{ fontWeight:600, textAlign:"left" }}>Poltrona 1</div>
-        <div style={{ fontWeight:600, textAlign:"left" }}>Poltrona 2</div>
-      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"80px 1fr 1fr", gap:16, alignItems:"start" }}>
+        {/* Righello orari, allineato con l'altezza della griglia */}
+        <div style={{ position:"relative", width: 80 }}>
+          {Array.from({ length: (DAY_END_MIN - DAY_START_MIN) / SLOT_MIN + 1 }, (_, i) => {
+            const m = DAY_START_MIN + i * SLOT_MIN
+            const hh = String(Math.floor(m / 60)).padStart(2, "0")
+            const mm = String(m % 60).padStart(2, "0")
+            return (
+              <div key={i} style={{ position:"absolute", top: i * SLOT_MIN, transform:"translateY(-50%)", fontSize:12, color:"#666" }}>
+                {hh}:{mm}
+              </div>
+            )
+          })}
+          <div style={{ height: DAY_END_MIN - DAY_START_MIN }} />
+        </div>
 
-      {/* Griglia: a sinistra i tempi, a destra le due colonne */}
-      <div style={{ display:"grid", gridTemplateColumns:"64px 1fr 1fr", gap:16 }}>
-        <TimeRail />
-        <Column items={chair1} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(1, hhmm)} />
-        <Column items={chair2} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(2, hhmm)} />
+        <Column title="Poltrona 1" items={chair1} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(1, hhmm)} />
+        <Column title="Poltrona 2" items={chair2} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(2, hhmm)} />
       </div>
 
       <CreateModal
