@@ -23,32 +23,25 @@ export const supaHeaders: Record<string, string> = {
   "Content-Type": "application/json",
 };
 
-// ===== HTTP helpers (unici, nessun duplicato) =====
-export const ok = (body: unknown) =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
+// ===== HTTP helpers (Netlify HandlerResponse) =====
+import type { HandlerResponse } from '@netlify/functions'
 
-export const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+export const json = (body: unknown, status = 200): HandlerResponse => ({
+  statusCode: status,
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+})
 
-export const badRequest = (msg: string) =>
-  new Response(JSON.stringify({ error: msg }), {
-    status: 400,
-    headers: { "Content-Type": "application/json" },
-  });
+export const ok = (body: unknown): HandlerResponse => json(body, 200)
 
-export const serverError = (msg: string) =>
-  new Response(JSON.stringify({ error: msg }), {
-    status: 500,
-    headers: { "Content-Type": "application/json" },
-  });
+export const badRequest = (msg: string): HandlerResponse =>
+  json({ error: msg }, 400)
+
+export const serverError = (e: unknown): HandlerResponse =>
+  json({ error: (e as any)?.message || String(e) || "Server error" }, 500)
 
 // ===== Time utils =====
+
 const TZ = "Europe/Rome";
 
 export const romeToUtcISO = (dateLocal: string, timeLocal: string) => {
@@ -93,3 +86,4 @@ export const logError = (label: string, e: unknown) => {
     console.error(`[ERR] ${label}:`, e)
   } catch {}
 }
+
