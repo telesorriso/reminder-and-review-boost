@@ -2,36 +2,21 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { DateTime, Interval } from 'luxon'
 
 type Props = { getToken: () => string }
-
-// <-- NOTA: aggiunte le proprietà opzionali contact_* che arrivano dal backend
 type Appointment = {
   id: string
-  patient_name: string | null
-  phone_e164: string | null
+  patient_name: string
+  phone_e164: string
   appointment_at: string
   duration_min: number
   chair: number
   status: string
-  contact_first_name?: string | null
-  contact_last_name?: string | null
 }
-
 type Contact = { id: string; first_name: string; last_name: string; phone_e164: string }
 
 const TZ = 'Europe/Rome'
 
 function toISODate(d: Date) {
   return DateTime.fromJSDate(d).setZone(TZ).toISODate()
-}
-
-// Helper per il nome da mostrare
-function displayName(a: Appointment) {
-  const ln = (a.contact_last_name ?? '').trim()
-  const fn = (a.contact_first_name ?? '').trim()
-  const fromContact = [ln, fn].filter(Boolean).join(' ').trim()
-  if (fromContact) return fromContact
-  if (a.patient_name && a.patient_name.trim()) return a.patient_name.trim()
-  return '—'
 }
 
 export const AgendaPage: React.FC<Props> = ({ getToken }) => {
@@ -42,35 +27,23 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
   const [modal, setModal] = useState<null | { chair: 1 | 2; time: string }>(null)
 
   const fetchAppts = async () => {
-    try {
-      const url = new URL('/.netlify/functions/appointments-by-day', window.location.origin)
-      url.searchParams.set('date', date)
-      const res = await fetch(url.toString(), { headers: { 'x-api-key': getToken() } })
-      if (!res.ok) {
-        const txt = await res.text()
-        alert(txt || `Errore nel caricamento appuntamenti (${res.status})`)
-        return
-      }
-      const data = await res.json()
-      setAppts(data.appointments || [])
-    } catch (e: any) {
-      alert(e?.message || 'Errore di rete caricando gli appuntamenti')
-    }
+    const url = new URL('/.netlify/functions/appointments-by-day', window.location.origin)
+    url.searchParams.set('date', date)
+    const res = await fetch(url.toString(), { headers: { 'x-api-key': getToken() } })
+    if (!res.ok) return alert(await res.text())
+    const data = await res.json()
+    setAppts(data.appointments || [])
   }
 
   const fetchContacts = async () => {
-    try {
-      const res = await fetch('/.netlify/functions/contacts-list', { headers: { 'x-api-key': getToken() } })
-      if (!res.ok) return
-      const data = await res.json()
-      setContacts(data.contacts || [])
-    } catch {
-      /* non bloccare la UI se la rubrica non carica */
-    }
+    const res = await fetch('/.netlify/functions/contacts-list', { headers: { 'x-api-key': getToken() } })
+    if (!res.ok) return
+    const data = await res.json()
+    setContacts(data.contacts || [])
   }
 
-  useEffect(() => { fetchAppts() /* eslint-disable-next-line */ }, [date])
-  useEffect(() => { fetchContacts() /* eslint-disable-next-line */ }, [])
+  useEffect(() => { fetchAppts() }, [date])
+  useEffect(() => { fetchContacts() }, [])
 
   const times = useMemo(() => {
     const out: string[] = []
@@ -83,14 +56,14 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
     return out
   }, [date, slotMin])
 
-  const openSlot = (chair: 1 | 2, time: string) => setModal({ chair, time })
+  const openSlot = (chair: 1|2, time: string) => setModal({ chair, time })
 
   const isOccupied = (chair: number, time: string) => {
     const slotStartLocal = DateTime.fromISO(`${date}T${time}`, { zone: TZ })
     const slotStartUTC = slotStartLocal.toUTC()
     return appts.some(a => {
       if (a.chair !== chair) return false
-      const start = DateTime.fromISO(a.appointment_at) // UTC dal DB
+      const start = DateTime.fromISO(a.appointment_at) // UTC in DB
       const end = start.plus({ minutes: a.duration_min })
       return Interval.fromDateTimes(start, end).contains(slotStartUTC)
     })
@@ -102,11 +75,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
       headers: { 'Content-Type': 'application/json', 'x-api-key': getToken() },
       body: JSON.stringify(payload)
     })
-    if (!res.ok) {
-      const txt = await res.text()
-      alert(txt || `Errore creazione appuntamento (${res.status})`)
-      return
-    }
+    if (!res.ok) return alert(await res.text())
     setModal(null)
     fetchAppts()
     alert('Appuntamento creato e promemoria programmati ✅')
@@ -130,17 +99,13 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
         <div></div>
         <div style={{ textAlign: 'center', fontWeight: 600 }}>Poltrona 1</div>
         <div style={{ textAlign: 'center', fontWeight: 600 }}>Poltrona 2</div>
-
         {times.map((t) => (
           <React.Fragment key={t}>
             <div style={{ fontSize: 12, opacity: 0.7, textAlign: 'right', paddingRight: 6 }}>{t}</div>
-
-            {[1, 2].map((chair) => {
-              const occupied = isOccupied(chair as 1 | 2, t)
+            {[1,2].map((chair) => {
+              const occupied = isOccupied(chair as 1|2, t)
               return (
-                <div
-                  key={chair}
-                  onClick={() => !occupied && openSlot(chair as 1 | 2, t)}
+                <div key={chair} onClick={() => !occupied && openSlot(chair as 1|2, t)}
                   style={{
                     border: '1px dashed #ccc',
                     minHeight: 28,
@@ -148,19 +113,16 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
                     cursor: occupied ? 'not-allowed' : 'pointer',
                     borderRadius: 6,
                     padding: 4
-                  }}
-                >
-                  {appts
-                    .filter(a => {
-                      const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
-                      return a.chair === chair && startLocal === t
-                    })
-                    .map(a => (
-                      <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
-                        <div style={{ fontWeight: 600, fontSize: 12 }}>{displayName(a)}</div>
-                        <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
-                      </div>
-                    ))}
+                  }}>
+                  {appts.filter(a => {
+                    const startLocal = DateTime.fromISO(a.appointment_at).setZone(TZ).toFormat('HH:mm')
+                    return a.chair === chair && startLocal === t
+                  }).map(a => (
+                    <div key={a.id} style={{ background: '#e8f5e9', border: '1px solid #b2dfdb', borderRadius: 6, padding: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>{a.patient_name}</div>
+                      <div style={{ fontSize: 12 }}>{t} • {a.duration_min} min</div>
+                    </div>
+                  ))}
                 </div>
               )
             })}
@@ -183,7 +145,7 @@ export const AgendaPage: React.FC<Props> = ({ getToken }) => {
 }
 
 const NewApptModal: React.FC<{
-  date: string; chair: 1 | 2; time: string;
+  date: string; chair: 1|2; time: string;
   contacts: Contact[];
   onClose: () => void;
   onSave: (payload: any) => void;
