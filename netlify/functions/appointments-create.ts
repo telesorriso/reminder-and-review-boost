@@ -17,7 +17,7 @@ export const handler: Handler = async (event) => {
   try {
     if (event.httpMethod !== 'POST') return badRequest('Use POST')
 
-    const body = JSON.parse(event.body || '{}').catch(() => ({}))
+    const body = JSON.parse(event.body || '{}') => ({}))
     const {
       contact_id,
       patient_name,
