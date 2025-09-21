@@ -1,9 +1,10 @@
+// netlify/functions/appointments-by-day.ts
 import type { Handler } from "@netlify/functions";
 import { ok, badRequest, serverError, supa, romeDayRangeUTC } from "./_shared";
 
 /**
- * NOTA: PostgREST non accetta funzioni in filter (quindi niente "coalesce(col1,col2)" in .gte/.lt).
- * Usiamo un OR: (start_at nel range) OR (appointment_at nel range).
+ * PostgREST non supporta funzioni nei filtri, quindi usiamo OR:
+ * (start_at nel range) OR (appointment_at nel range)
  */
 export const handler: Handler = async (event) => {
   const date =
@@ -27,7 +28,6 @@ export const handler: Handler = async (event) => {
       .or(
         `and(start_at.gte.${start},start_at.lt.${end}),and(appointment_at.gte.${start},appointment_at.lt.${end})`
       )
-      // ordina prima per start_at (se presente), poi per appointment_at (fallback)
       .order("start_at", { ascending: true, nullsFirst: false })
       .order("appointment_at", { ascending: true, nullsFirst: false });
 
