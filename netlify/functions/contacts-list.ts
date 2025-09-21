@@ -16,7 +16,7 @@ export const handler: Handler = async (event) => {
       .limit(limit);
 
     if (q) {
-      query = query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,phone_e164.ilike.%${q}%`);
+      query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,phone_e164.ilike.%${q}%`);
     }
 
     const { data, error } = await query;

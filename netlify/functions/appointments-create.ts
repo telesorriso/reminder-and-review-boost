@@ -1,3 +1,4 @@
+import type { Handler } from '@netlify/functions'
 // Crea un appuntamento. Supporta:
 // - { contact_id, date_local, time_local, chair, duration_min, review_delay_hours }
 // - { patient_name, phone_e164, date_local, time_local, chair, duration_min, review_delay_hours }
@@ -12,11 +13,11 @@ import {
   isUUID,
 } from './_shared'
 
-export default async (req: Request) => {
+export const handler: Handler = async (event) => {
   try {
-    if (req.method !== 'POST') return badRequest('Use POST')
+    if (event.httpMethod !== 'POST') return badRequest('Use POST')
 
-    const body = await req.json().catch(() => ({}))
+    const body = JSON.parse(event.body || '{}').catch(() => ({}))
     const {
       contact_id,
       patient_name,

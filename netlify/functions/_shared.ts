@@ -1,3 +1,4 @@
+import type { Handler } from '@netlify/functions'
 // netlify/functions/_shared.ts
 import { DateTime } from "luxon";
 import { createClient } from "@supabase/supabase-js";
@@ -84,3 +85,11 @@ export const isUUID = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     v || ""
   );
+
+
+// Simple error logger
+export const logError = (label: string, e: unknown) => {
+  try {
+    console.error(`[ERR] ${label}:`, e)
+  } catch {}
+}
