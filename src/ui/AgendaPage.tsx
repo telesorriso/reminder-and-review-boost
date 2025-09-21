@@ -479,7 +479,7 @@ function Column({
         style={{
           border: "1px dashed #ccc",
           borderRadius: 8,
-          padding: 8,
+          padding: 0,
           minHeight: containerHeightPx,
           position: "relative"
         }}
@@ -517,15 +517,22 @@ function Column({
   )
 }
 function Card({ appt }: { appt: Positioned }) {
-  const gap = 6
-  const widthPct = (100 - (appt.laneCount - 1) * (gap / 2)) / appt.laneCount
-  const leftPct = appt.lane * widthPct + (appt.lane * (gap / 2) * 100) / 100
+  // Gap orizzontale costante tra corsie (in px)
+  const GAP_PX = 6
+  const lanes = Math.max(1, appt.laneCount)
+  const lane = Math.max(0, Math.min(appt.lane, lanes - 1))
+
+  // Quota percentuale per corsia (prima del gap)
+  const widthPct = 100 / lanes
+  const leftPct = (lane * 100) / lanes
+
   return (
     <div
       style={{
         position: "absolute",
-        left: `${leftPct}%`,
-        width: `${widthPct}%`,
+        // percentuale + correzione in px per tenere un piccolo gap e non sforare a destra
+        left: `calc(${leftPct}% + ${GAP_PX / 2}px)`,
+        width: `calc(${widthPct}% - ${GAP_PX}px)`,
         top: appt.topMin,
         height: appt.heightMin,
         background: "#e6f7eb",
@@ -544,7 +551,6 @@ function Card({ appt }: { appt: Positioned }) {
     </div>
   )
 }
-
 /* ---------- pagina ---------- */
 export function AgendaPage() {
   const [selectedDate, setSelectedDate] = useState<string>(() => {
