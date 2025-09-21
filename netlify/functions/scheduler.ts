@@ -1,6 +1,8 @@
 // netlify/functions/scheduler.ts
-import { ok } from "./_shared";
+import type { Handler } from '@netlify/functions'
+import { json } from './_shared'
 
-export default async () => {
-  return ok({ ok: true });
+export const handler: Handler = async () => {
+  // placeholder: niente da fare, il bot su Hetzner processa i messaggi
+  return json({ ok: true })
 }
