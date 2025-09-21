@@ -109,7 +109,7 @@ const timeGrid = (stepMin: number) => {
   return out
 }
 
-export default function AgendaPage() {
+export function AgendaPage() {
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const now = new Date()
     const yyyy = now.getFullYear()
