@@ -16,15 +16,13 @@ export const handler: Handler = async (event) => {
       .limit(limit);
 
     if (q) {
-      query = query.or(
-        `first_name.ilike.%${'{'}q{'}'}%,last_name.ilike.%${'{'}q{'}'}%,phone_e164.ilike.%${'{'}q{'}'}%`
-      );
+      query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,phone_e164.ilike.%${q}%`);
     }
 
     const { data, error } = await query;
     if (error) return serverError(error.message);
 
-    return ok({ contacts: data ?? [] });
+    return ok({ items: data ?? [] });
   } catch (e: any) {
     return serverError(e?.message || "Unhandled error");
   }
