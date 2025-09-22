@@ -1,74 +1,110 @@
-import type { Handler } from "@netlify/functions";
-import { ok, badRequest, serverError, supa, romeToUtcISO } from "./_shared";
+// Crea un appuntamento. Supporta:
+// - { contact_id, date_local, time_local, chair, duration_min, review_delay_hours }
+// - { patient_name, phone_e164, date_local, time_local, chair, duration_min, review_delay_hours }
+// - opzionale: { save_contact: true } quando si inserisce manualmente
+import {
+  ok,
+  badRequest,
+  serverError,
+  supa,
+  romeToUtcISO,
+  splitName,
+  isUUID,
+} from './_shared'
 
-type Body = {
-  chair?: number;
-  date?: string;
-  day?: string;
-  date_local?: string;
-  dateLocal?: string;
-  time?: string;
-  time_local?: string;
-  timeLocal?: string;
-  duration_min?: number;
-  contact_id?: string;
-  patient_name?: string;
-  dentist_id?: string;
-  note?: string;
-  phone_e164?: string; // compat: colonna presente in appointments (via rapida)
-};
-
-const pick = (...vals: (string | undefined | null)[]) =>
-  (vals.find(v => typeof v === "string" && v.trim().length > 0) || "").trim();
-
-export const handler: Handler = async (event) => {
-  // parse body safe
-  let body: Body | null = null;
+export default async (req: Request) => {
   try {
-    body = event.body ? (JSON.parse(event.body) as Body) : null;
-  } catch {
-    return badRequest("Invalid JSON body");
-  }
-  if (!body) return badRequest("Missing JSON body");
+    if (req.method !== 'POST') return badRequest('Use POST')
 
-  try {
-    const dentist_id = (body.dentist_id || "main").trim();
-    const chair = Number(body.chair || 0);
-    const duration_min = Number(body.duration_min || 30);
-    const note = (body.note || "").trim() || null;
-    const contact_id = body.contact_id || null;
-    const patient_name = (body.patient_name || "").trim() || null;
-    const phone_e164 = (body.phone_e164 || "").trim() || null;
+    const body = await req.json().catch(() => ({}))
+    const {
+      contact_id,
+      patient_name,
+      phone_e164,
+      date_local,
+      time_local,
+      chair,
+      duration_min,
+      review_delay_hours,
+      save_contact,
+    } = body || {}
 
-    if (!chair || chair < 1) return badRequest("Missing or invalid 'chair'");
-    if (!duration_min || duration_min <= 0) return badRequest("Missing or invalid 'duration_min'");
+    if (!date_local || !time_local) return badRequest('Missing date/time')
+    if (!chair) return badRequest('Missing chair')
+    if (!duration_min) return badRequest('Missing duration')
 
-    // normalizza date/time (Europa/Roma)
-    const date = pick(body.date, body.day, body.date_local, body.dateLocal);
-    const time = pick(body.time, body.time_local, body.timeLocal);
-    const start_at = romeToUtcISO(date, time);
-    if (!start_at) return badRequest("Missing or invalid 'date'/'time'");
+    // Calcolo istante appuntamento in UTC ISO
+    const appointment_at = romeToUtcISO(String(date_local), String(time_local))
 
-    // inserisco valorizzando sia start_at che appointment_at (compat)
+    let finalPatientName: string | null = (patient_name ?? '').trim() || null
+    let finalContactId: string | null = contact_id ?? null
+    let finalPhone: string | null = (phone_e164 ?? '').trim() || null
+
+    // Se viene passato un contact_id, denormalizzo il nome per display
+    if (finalContactId) {
+      if (!isUUID(finalContactId)) return badRequest('Invalid contact_id')
+
+      const { data: c, error: ce } = await supa
+        .from('contacts')
+        .select('first_name,last_name,phone_e164')
+        .eq('id', finalContactId)
+        .single()
+
+      if (ce) return serverError(ce.message)
+
+      const display =
+        [c?.first_name, c?.last_name].filter(Boolean).join(' ').trim()
+      if (display) finalPatientName = display
+      if (!finalPhone) finalPhone = c?.phone_e164 ?? null
+    }
+
+    // Se inserimento manuale + richiesta di salvataggio contatto
+    if (!finalContactId && !finalPatientName && finalPhone) {
+      // se non hai indicato explicit patient_name ma hai un telefono,
+      // provo a derivare nome/cognome dal campo "patient_name" (anche vuoto)
+      const { first, last } = splitName(patient_name || '')
+      const toInsert = {
+        first_name: first,
+        last_name: last,
+        phone_e164: finalPhone,
+      }
+      if (save_contact) {
+        const { data: nc, error: ne } = await supa
+          .from('contacts')
+          .insert(toInsert)
+          .select('id, first_name, last_name')
+          .single()
+        if (ne) return serverError(ne.message)
+        finalContactId = nc.id
+        if (!finalPatientName) {
+          const nm = [nc.first_name, nc.last_name].filter(Boolean).join(' ').trim()
+          if (nm) finalPatientName = nm
+        }
+      }
+    }
+
+    // Inserimento appuntamento
+    const insertPayload: any = {
+      appointment_at,
+      chair,
+      duration_min,
+      status: 'scheduled',
+      contact_id: finalContactId,
+      patient_name: finalPatientName,
+      phone_e164: finalPhone,
+      review_delay_hours: review_delay_hours ?? 2,
+    }
+
     const { data, error } = await supa
-      .from("appointments")
-      .insert([{
-        dentist_id,
-        chair,
-        start_at,                 // nuovo
-        appointment_at: start_at, // compat
-        duration_min,
-        contact_id,
-        patient_name,
-        note,
-        phone_e164                // compat: colonna presente
-      }])
-      .select("id, dentist_id, chair, start_at, appointment_at, duration_min, patient_name, contact_id, note, phone_e164")
-      .single();
+      .from('appointments')
+      .insert(insertPayload)
+      .select('id')
+      .single()
 
-    if (error) return serverError(error);
-    return ok({ appointment: data });
-  } catch (e) {
-    return serverError(e);
+    if (error) return serverError(error.message)
+
+    return ok({ id: data?.id })
+  } catch (e: any) {
+    return serverError(e?.message || 'Unhandled error')
   }
-};
+}
