@@ -17,5 +17,16 @@
   cron     = "0 19 * * *"
   timezone = "Europe/Rome"
 
+  [build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+
+# Scheduled Function per i reminder quotidiani
+[functions."reminders-daily"]
+  schedule = "0 19 * * *"   # ogni giorno alle 19:00 UTC
+
 [build.environment]
   NODE_VERSION = "20"
