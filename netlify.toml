@@ -17,10 +17,6 @@
   cron     = "0 19 * * *"
   timezone = "Europe/Rome"
 
-  [build]
-  command = "npm run build"
-  publish = "dist"
-
 [functions]
   directory = "netlify/functions"
 
