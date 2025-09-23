@@ -9,5 +9,14 @@
   name = "scheduler"
   cron = "*/5 * * * *"
 
+[functions]
+  node_bundler = "esbuild"
+
+[[scheduled.functions]]
+  name = "reminders-daily"
+  cron = "0 19 * * *"
+  timezone = "Europe/Rome"
+  path = "/.netlify/functions/reminders-daily"
+
 [build.environment]
   NODE_VERSION = "20"
