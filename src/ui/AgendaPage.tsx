@@ -1,4 +1,3 @@
-
 // src/ui/AgendaPage.tsx
 import React, { useEffect, useMemo, useState } from "react"
 
@@ -37,22 +36,10 @@ type Contact = {
   phone_e164?: string | null
 }
 
-/* ---------- costanti & utils ---------- */
-const DAY_START_MIN = 10 * 60   // 10:00
-const DAY_END_MIN   = 20 * 60   // 20:00
-
-// un solo valore di scala per tutto (slot, righe, etichette)
-const PX_PER_MIN = 2
-
+/* ---------- utils ---------- */
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`)
-
 const toRomeHHmm = (isoUtc: string) =>
-  new Date(isoUtc).toLocaleTimeString("it-IT", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/Rome",
-    hour12: false
-  })
+  new Date(isoUtc).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome", hour12: false })
 
 const minutesOfDayRome = (isoUtc: string) => {
   const d = new Date(isoUtc)
@@ -86,13 +73,18 @@ async function fetchAppointments(dayISO: string): Promise<UiAppointment[]> {
   return items.map(toUi)
 }
 
-/* ---------- layout con corsie ---------- */
+/* ---------- agenda layout ---------- */
+const DAY_START_MIN = 10 * 60
+const DAY_END_MIN = 20 * 60
+const DEFAULT_SLOT_MIN = 15
+
 type Positioned = UiAppointment & {
   topMin: number
   heightMin: number
   lane: number
   laneCount: number
 }
+
 function layoutWithLanes(items: UiAppointment[]): Positioned[] {
   const sorted = [...items].sort((a, b) => minutesOfDayRome(a.start) - minutesOfDayRome(b.start))
   type Active = { appt: Positioned; endMin: number }
@@ -106,7 +98,7 @@ function layoutWithLanes(items: UiAppointment[]): Positioned[] {
   }
   for (const appt of sorted) {
     const startMin = minutesOfDayRome(appt.start)
-    const heightMin = Math.max(15, appt.durationMin || 15)
+    const heightMin = Math.max(DEFAULT_SLOT_MIN, appt.durationMin || DEFAULT_SLOT_MIN)
     const endMin = startMin + heightMin
     const latestEnd = active.reduce((m, a) => Math.max(m, a.endMin), -1)
     if (active.length && startMin >= latestEnd) flush()
@@ -121,31 +113,34 @@ function layoutWithLanes(items: UiAppointment[]): Positioned[] {
 }
 
 /* ---------- time rail ---------- */
-function TimeRail({ slotMin }: { slotMin: number }) {
-  const labels: {top:number,label:string}[] = []
+function TimeRail({ slotMin = DEFAULT_SLOT_MIN }: { slotMin?: number }) {
+  // etichette ogni 30 min (10:00, 10:30, 11:00, …)
+  const labels: string[] = []
   for (let m = DAY_START_MIN; m <= DAY_END_MIN; m += 30) {
-    labels.push({ top: (m - DAY_START_MIN) * PX_PER_MIN, label: `${pad2(Math.floor(m/60))}:${pad2(m%60)}` })
+    const hh = String(Math.floor(m / 60)).padStart(2, "0")
+    const mm = String(m % 60).padStart(2, "0")
+    labels.push(`${hh}:${mm}`)
   }
-  const height = (DAY_END_MIN - DAY_START_MIN) * PX_PER_MIN
-  const slotHeight = slotMin * PX_PER_MIN
+  // Sposta le etichette di **uno slot** in basso per farle combaciare con la griglia
+  const LABEL_OFFSET_MIN = slotMin
 
   return (
-    <div style={{ position: "relative", width: 60 }}>
-      {/* stesso pattern di righe della colonna */}
-      <div
-        style={{
-          position:"absolute", inset:0,
-          backgroundImage: `repeating-linear-gradient(to bottom, #222 0, #222 1px, transparent 1px, transparent ${slotHeight}px)`,
-          opacity: 0.25,
-          pointerEvents:"none"
-        }}
-      />
-      {labels.map((t) => (
-        <div key={t.top} style={{ position:"absolute", top: t.top, transform:"translateY(-8px)", fontSize: 12, color:"#333" }}>
-          {t.label}
+    <div style={{ position: "relative", width: 56 }}>
+      {labels.map((t, i) => (
+        <div
+          key={t}
+          style={{
+            position: "absolute",
+            top: i * 30 + LABEL_OFFSET_MIN,
+            fontSize: 12,
+            color: "#666",
+            lineHeight: "12px",
+          }}
+        >
+          {t}
         </div>
       ))}
-      <div style={{ height }} />
+      <div style={{ height: (DAY_END_MIN - DAY_START_MIN) }} />
     </div>
   )
 }
@@ -157,36 +152,64 @@ type CreatePayload = {
   date: string
   time: string
   duration_min: number
+  // ramo A (contatto)
   contact_id?: string | null
+  // ramo B (manuale)
   patient_name?: string | null
   phone_e164?: string | null
+  // comune
   note?: string | null
 }
 
 function useDebounced<T>(value: T, delay = 250) {
   const [v, setV] = useState(value)
-  useEffect(() => { const id = setTimeout(() => setV(value), delay); return () => clearTimeout(id) }, [value, delay])
+  useEffect(() => {
+    const id = setTimeout(() => setV(value), delay)
+    return () => clearTimeout(id)
+  }, [value, delay])
   return v
 }
 
 function CreateModal({
   visible, onClose, onSaved, date, chair, timeHHmm,
-}: { visible:boolean; onClose:()=>void; onSaved:()=>void; date:string; chair:1|2; timeHHmm:string }) {
+}: {
+  visible: boolean
+  onClose: () => void
+  onSaved: () => void
+  date: string
+  chair: 1 | 2
+  timeHHmm: string
+}) {
   const [mode, setMode] = useState<"contact"|"manual">("contact")
+
+  // stato: contatto
   const [query, setQuery] = useState("")
   const debouncedQ = useDebounced(query)
   const [results, setResults] = useState<Contact[]>([])
   const [selected, setSelected] = useState<Contact | null>(null)
-  const [duration, setDuration] = useState(30)
-  const [note, setNote] = useState("")
+  const [loadingQ, setLoadingQ] = useState(false)
+
+  // stato: manuale
   const [name, setName] = useState("")
   const [phone, setPhone] = useState("")
+
+  // comune
+  const [duration, setDuration] = useState(30)
+  const [note, setNote] = useState("")
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     if (!visible) return
-    setErr(null); setResults([]); setSelected(null); setQuery(""); setName(""); setPhone(""); setNote(""); setDuration(30); setMode("contact")
+    setErr(null)
+    setResults([])
+    setSelected(null)
+    setQuery("")
+    setName("")
+    setPhone("")
+    setNote("")
+    setDuration(30)
+    setMode("contact")
   }, [visible, chair, timeHHmm])
 
   useEffect(() => {
@@ -195,11 +218,16 @@ function CreateModal({
     if (!q) { setResults([]); return }
     let cancel = false
     ;(async () => {
+      setLoadingQ(true)
       try {
         const r = await fetch(`/.netlify/functions/contacts-list?q=${encodeURIComponent(q)}`)
         const j = await r.json()
         if (!cancel) setResults(Array.isArray(j.items) ? (j.items as Contact[]) : [])
-      } catch { if (!cancel) setResults([]) }
+      } catch {
+        if (!cancel) setResults([])
+      } finally {
+        if (!cancel) setLoadingQ(false)
+      }
     })()
     return () => { cancel = true }
   }, [debouncedQ, mode, visible])
@@ -210,50 +238,78 @@ function CreateModal({
     e.preventDefault()
     setSaving(true); setErr(null)
     try {
-      const payload: CreatePayload = { dentist_id: "main", chair, date, time: timeHHmm, duration_min: duration, note: note || null }
+      const payload: CreatePayload = {
+        dentist_id: "main",
+        chair,
+        date,
+        time: timeHHmm,
+        duration_min: duration,
+        note: note || null,
+      }
       if (mode === "contact") {
         if (!selected) throw new Error("Seleziona un contatto")
         payload.contact_id = selected.id
       } else {
         payload.patient_name = name || null
         payload.phone_e164 = phone || null
-        if (!payload.patient_name && !payload.phone_e164) throw new Error("Inserisci almeno nome o telefono")
+        if (!payload.patient_name && !payload.phone_e164) {
+          throw new Error("Inserisci almeno nome o telefono")
+        }
       }
-      const res = await fetch("/.netlify/functions/appointments-create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      const res = await fetch("/.netlify/functions/appointments-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`)
-      onSaved(); onClose()
-    } catch (e:any) {
+      onSaved()
+      onClose()
+    } catch (e: any) {
       setErr(String(e?.message || e))
-    } finally { setSaving(false) }
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.25)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }} onClick={onClose}>
-      <div style={{ background:"#fff", borderRadius:8, padding:16, width:520, maxWidth:"92vw", boxShadow:"0 10px 40px rgba(0,0,0,0.2)" }} onClick={e=>e.stopPropagation()}>
-        <h3 style={{ marginTop:0 }}>Crea nuovo appuntamento</h3>
-        <div style={{ marginBottom:8 }}>Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b></div>
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      onClick={onClose}
+    >
+      <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: 560, boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        <h3 style={{ marginTop: 0 }}>Crea nuovo appuntamento</h3>
 
-        <div style={{ display:"flex", gap:16, marginBottom:8 }}>
+        <div style={{ marginBottom: 8 }}>Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b></div>
+
+        <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
           <label><input type="radio" checked={mode==="contact"} onChange={()=>setMode("contact")} /> Usa contatto</label>
           <label><input type="radio" checked={mode==="manual"} onChange={()=>setMode("manual")} /> Inserisci manualmente</label>
         </div>
 
         <form onSubmit={onSubmit}>
           {mode === "contact" ? (
-            <div style={{ marginBottom:12 }}>
-              <input
-                placeholder="Cerca contatto (nome, cognome o telefono)"
-                value={query}
-                onChange={(e)=>{ setQuery(e.target.value); setSelected(null) }}
-                style={{ width:"100%" }}
-              />
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ position: "relative" }}>
+                <input
+                  placeholder="Cerca contatto (nome, cognome o telefono)"
+                  value={query}
+                  onChange={(e)=>{ setQuery(e.target.value); setSelected(null) }}
+                  style={{ width: "100%" }}
+                />
+                {/* rimosso il badge “scrivi per cercare” */}
+              </div>
               {!!results.length && !selected && (
                 <div style={{ border:"1px solid #eee", borderRadius:6, marginTop:6, maxHeight:200, overflow:"auto" }}>
                   {results.map(c => {
                     const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"
                     return (
-                      <button type="button" key={c.id} onClick={()=>setSelected(c)} style={{ display:"flex", width:"100%", textAlign:"left", padding:"8px 10px", borderBottom:"1px solid #f3f3f3", background:"#fff", cursor:"pointer" }}>
+                      <button
+                        type="button"
+                        key={c.id}
+                        onClick={()=>setSelected(c)}
+                        style={{ display:"flex", width:"100%", textAlign:"left", padding:"8px 10px", borderBottom:"1px solid #f3f3f3", background:"#fff", cursor:"pointer" }}
+                      >
                         <div style={{ flex:1 }}>{name}</div>
                         <div style={{ color:"#666" }}>{c.phone_e164 || ""}</div>
                       </button>
@@ -262,7 +318,7 @@ function CreateModal({
                 </div>
               )}
               {selected && (
-                <div style={{ marginTop:6, padding:8, background:"#f7f7f7", borderRadius:6, display:"flex", justifyContent:"space-between" }}>
+                <div style={{ marginTop: 6, padding: 8, background:"#f7f7f7", borderRadius:6, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                   <div>
                     <div style={{ fontWeight:600 }}>{[selected.first_name, selected.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"}</div>
                     <div style={{ fontSize:12, color:"#666" }}>{selected.phone_e164 || ""}</div>
@@ -272,18 +328,21 @@ function CreateModal({
               )}
             </div>
           ) : (
-            <div style={{ marginBottom:12 }}>
-              <label style={{ display:"block", marginBottom:8 }}>Nome paziente
-                <input value={name} onChange={(e)=>setName(e.target.value)} style={{ width:"100%" }} />
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Nome paziente
+                <input value={name} onChange={(e)=>setName(e.target.value)} style={{ width: "100%" }} />
               </label>
-              <label style={{ display:"block", marginBottom:8 }}>Telefono (E.164, es. +39333...)
-                <input value={phone} onChange={(e)=>setPhone(e.target.value)} style={{ width:"100%" }} />
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Telefono (E.164, es. +39333...)
+                <input value={phone} onChange={(e)=>setPhone(e.target.value)} style={{ width: "100%" }} />
               </label>
             </div>
           )}
 
-          <div style={{ display:"flex", gap:12, marginBottom:12 }}>
-            <label>Durata{" "}
+          <div style={{ display:"flex", gap:12, marginBottom: 12 }}>
+            <label>
+              Durata{" "}
               <select value={duration} onChange={(e)=>setDuration(Number(e.target.value))}>
                 <option value={15}>15 min</option>
                 <option value={30}>30 min</option>
@@ -293,11 +352,11 @@ function CreateModal({
             </label>
             <label style={{ flex:1 }}>
               Note
-              <textarea value={note} onChange={(e)=>setNote(e.target.value)} rows={3} style={{ width:"100%" }} />
+              <textarea value={note} onChange={(e)=>setNote(e.target.value)} rows={3} style={{ width: "100%" }} />
             </label>
           </div>
 
-          {err && <div style={{ color:"crimson", marginBottom:8 }}>{err}</div>}
+          {err && <div style={{ color:"crimson", marginBottom: 8 }}>{err}</div>}
 
           <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
             <button type="button" onClick={onClose} disabled={saving}>Annulla</button>
@@ -309,109 +368,79 @@ function CreateModal({
   )
 }
 
-/* ---------- Colonne & Card ---------- */
+/* ---------- colonne & card ---------- */
 function Column({
-  title, items, slotMin, onSlotClick,
-}: { title:string; items:Positioned[]; slotMin:number; onSlotClick:(hhmm:string)=>void }) {
-
-  const slotHeight = slotMin * PX_PER_MIN
-  const containerHeightPx = (DAY_END_MIN - DAY_START_MIN) * PX_PER_MIN
-
-  // ore cliccabili: generiamo il click a intervalli di slotMin
-  const clickables = useMemo(() => {
+  title, items, containerHeightPx, onSlotClick, slotMin,
+}: {
+  title:string
+  items:Positioned[]
+  containerHeightPx:number
+  onSlotClick:(hhmm:string)=>void
+  slotMin:number
+}) {
+  const slots = useMemo(() => {
     const out: { top:number; label:string }[] = []
     for (let m = DAY_START_MIN; m < DAY_END_MIN; m += slotMin) {
       const hh = Math.floor(m/60), mm = m % 60
-      out.push({ top: (m - DAY_START_MIN) * PX_PER_MIN, label: `${pad2(hh)}:${pad2(mm)}` })
+      out.push({ top: m - DAY_START_MIN, label: `${pad2(hh)}:${pad2(mm)}` })
     }
     return out
   }, [slotMin])
-
   return (
     <div>
       <h3 style={{ marginBottom: 8 }}>{title}</h3>
       <div
         style={{
-          border: "1px dashed #ccc",
+          border:"1px dashed #ccc",
           borderRadius: 8,
           padding: 8,
           minHeight: containerHeightPx,
-          position: "relative",
-          overflow: "hidden",
-          boxSizing: "border-box",
-        }}
+          position:"relative",
+          backgroundImage:
+            "repeating-linear-gradient(to bottom, rgba(0,0,0,0.06) 0, rgba(0,0,0,0.06) 1px, transparent 1px, transparent var(--slot))",
+          backgroundSize: "100% var(--slot)",
+          // più marcate: 1px scuro
+          "--slot": `${slotMin}px` as unknown as string,
+        } as React.CSSProperties}
       >
-        {/* righe slot con repeating-linear-gradient */}
-        <div
-          style={{
-            position: "absolute",
-            inset: 8,
-            top: 8,
-            bottom: 8,
-            left: 8,
-            right: 8,
-            backgroundImage: `repeating-linear-gradient(to bottom, #222 0, #222 1px, transparent 1px, transparent ${slotHeight}px)`,
-            opacity: 0.2,
-            pointerEvents: "none",
-          }}
-        />
-        {/* layer di click */}
-        {clickables.map(s => (
+        {slots.map(s => (
           <button
             key={s.label}
             onClick={() => onSlotClick(s.label)}
             title={`Nuovo alle ${s.label}`}
             style={{
               position:"absolute",
-              left: 12,
-              right: 12,
-              top: s.top + 8, // 8 = padding contenitore
-              height: slotHeight,
+              left:4, right:4, top:s.top,
+              height:slotMin,
               background:"transparent",
-              border:"0",
+              border:"1px dashed rgba(0,0,0,0.10)",
+              borderRadius:6,
               cursor:"pointer",
               zIndex:1
             }}
             aria-label={`Crea appuntamento alle ${s.label}`}
           />
         ))}
-        {/* cards */}
         {items.map(appt => <Card key={appt.id} appt={appt} />)}
-        {items.length === 0 && (
-          <div style={{ position:"absolute", inset:"40px 16px auto 16px", textAlign:"center", opacity:0.6 }}>
-            Clicca uno slot per creare un appuntamento
-          </div>
-        )}
-        {/* spacer per altezza */}
-        <div style={{ height: containerHeightPx }} />
+        {items.length === 0 && <div style={{ opacity:0.5, textAlign:"center", padding:16 }}>Clicca uno slot per creare un appuntamento</div>}
       </div>
     </div>
   )
 }
-
 function Card({ appt }: { appt:Positioned }) {
   const gap = 6
-  const widthPct = `calc((100% - ${(appt.laneCount - 1) * gap}px) / ${appt.laneCount})`
-  const leftPct  = `calc((${widthPct} + ${gap}px) * ${appt.lane})`
+  const widthPct = (100 - (appt.laneCount - 1) * (gap / 2)) / appt.laneCount
+  const leftPct = appt.lane * widthPct + (appt.lane * (gap / 2) * 100) / 100
   return (
     <div
       style={{
-        position:"absolute",
-        left: `calc(12px + ${leftPct})`, // 12px = offset pulsanti
-        width: widthPct,
-        top: 8 + appt.topMin * PX_PER_MIN,
-        height: appt.heightMin * PX_PER_MIN,
-        background:"#e6f7eb",
-        border:"1px solid #bfe3c8",
-        borderRadius:8,
-        padding:8,
-        overflow:"hidden",
-        boxSizing:"border-box",
-        zIndex:2,
+        position:"absolute", left:`${leftPct}%`, width:`${widthPct}%`,
+        top: appt.topMin, height: appt.heightMin,
+        background:"#e6f7eb", border:"1px solid #bfe3c8", borderRadius:8, padding:8, overflow:"hidden", boxSizing:"border-box", zIndex:2,
       }}
       title={`${toRomeHHmm(appt.start)} • ${appt.durationMin} min`}
     >
-      <div style={{ fontWeight:600, marginBottom:4, textTransform:"none" }}>{appt.name}</div>
+      <div style={{ fontWeight:600, marginBottom:4 }}>{appt.name}</div>
       <div style={{ fontSize:12 }}>{toRomeHHmm(appt.start)} • {appt.durationMin} min</div>
       {appt.note && <div style={{ fontSize:12, opacity:0.8 }}>{appt.note}</div>}
     </div>
@@ -424,7 +453,7 @@ export function AgendaPage() {
     const now = new Date()
     return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`
   })
-  const [slotMin, setSlotMin] = useState<number>(30)
+  const [slotMin, setSlotMin] = useState<number>(30) // selettore utente
   const [items, setItems] = useState<UiAppointment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -442,9 +471,14 @@ export function AgendaPage() {
 
   const chair1 = useMemo(()=>layoutWithLanes(items.filter(i=>i.chair===1)), [items])
   const chair2 = useMemo(()=>layoutWithLanes(items.filter(i=>i.chair===2)), [items])
+  const containerHeightPx = Math.max(
+    ...[...chair1, ...chair2].map(p => p.topMin + p.heightMin),
+    DAY_END_MIN - DAY_START_MIN
+  )
 
   const reload = () => { fetchAppointments(selectedDate).then(setItems).catch(console.error) }
 
+  // slot → prova funzioni legacy, se non ci sono apri la nostra modale
   const openNewAt = (chair:1|2, hhmm:string) => {
     const w:any = window
     if (typeof w.openCreateAppointment === "function") {
@@ -461,6 +495,7 @@ export function AgendaPage() {
 
   return (
     <div style={{ padding: 16 }}>
+      {/* TITOLO UNICO */}
       <h1 style={{ marginBottom: 8 }}>V Dental – Agenda &amp; Logs</h1>
 
       <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:12 }}>
@@ -477,10 +512,10 @@ export function AgendaPage() {
         {error && <span style={{ color:"crimson" }}>{error}</span>}
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"60px 1fr 1fr", gap:16 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"64px 1fr 1fr", gap:16 }}>
         <TimeRail slotMin={slotMin} />
-        <Column title="Poltrona 1" items={chair1} slotMin={slotMin} onSlotClick={(hhmm)=>openNewAt(1, hhmm)} />
-        <Column title="Poltrona 2" items={chair2} slotMin={slotMin} onSlotClick={(hhmm)=>openNewAt(2, hhmm)} />
+        <Column title="Poltrona 1" items={chair1} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(1, hhmm)} slotMin={slotMin} />
+        <Column title="Poltrona 2" items={chair2} containerHeightPx={containerHeightPx} onSlotClick={(hhmm)=>openNewAt(2, hhmm)} slotMin={slotMin} />
       </div>
 
       <CreateModal
