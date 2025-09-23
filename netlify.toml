@@ -1,32 +1,6 @@
 [build]
-  command = "npm install && npm run build"
-  publish = "dist"
-
-[functions]
-  directory    = "netlify/functions"
-  node_bundler = "esbuild"
-
-# Ping ogni 5 minuti (se ti serve)
-[[scheduled.functions]]
-  name = "scheduler"
-  cron = "*/5 * * * *"
-
-# Reminder giornaliero alle 19:00 ora di Roma
-[[scheduled.functions]]
-  name     = "reminders-daily"
-  cron     = "0 19 * * *"
-  timezone = "Europe/Rome"
-
-  [build]
   command = "npm run build"
   publish = "dist"
 
 [functions]
-  directory = "netlify/functions"
-
-# Scheduled Function per i reminder quotidiani
-[functions."reminders-daily"]
-  schedule = "0 19 * * *"   # ogni giorno alle 19:00 UTC
-
-[build.environment]
-  NODE_VERSION = "20"
+  node_bundler = "esbuild"
