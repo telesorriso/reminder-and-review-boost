@@ -1,16 +1,17 @@
-// src/ui/AgendaPage.tsx
 import React, { useEffect, useMemo, useState } from "react"
 
-/* ---------- types from backend ---------- */
+/** ===================
+ *  Types from backend
+ *  =================== */
 type RawAppointment = {
   id: string
   chair: number | string
-  start_at?: string | null
   appointment_at?: string | null
+  start_at?: string | null
   duration_min?: number | null
   patient_name?: string | null
-  note?: string | null
   phone_e164?: string | null
+  note?: string | null
   contact_id?: string | null
   contact?: {
     id: string
@@ -19,16 +20,18 @@ type RawAppointment = {
     phone_e164?: string | null
   } | null
 }
+
 type UiAppointment = {
   id: string
   chair: number
-  start: string
+  start: string       // ISO UTC
   durationMin: number
   name: string
   phone?: string | null
   note?: string | null
   contactId?: string | null
 }
+
 type Contact = {
   id: string
   first_name?: string | null
@@ -36,48 +39,53 @@ type Contact = {
   phone_e164?: string | null
 }
 
-/* ---------- utils ---------- */
+/** ===================
+ *  Time helpers
+ *  =================== */
+const TZ = "Europe/Rome"
+const DAY_START_H = 10
+const DAY_END_H = 20
+
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`)
 
-// HH:mm in Europe/Rome from a UTC ISO
 const toRomeHHmm = (isoUtc: string) =>
   new Date(isoUtc).toLocaleTimeString("it-IT", {
     hour: "2-digit",
     minute: "2-digit",
-    timeZone: "Europe/Rome",
+    timeZone: TZ,
     hour12: false,
   })
 
-// minutes since 00:00 (Europe/Rome) from a UTC ISO
 const minutesOfDayRome = (isoUtc: string) => {
   const d = new Date(isoUtc)
-  const h = Number(
-    d.toLocaleString("it-IT", {
-      hour: "2-digit",
-      hour12: false,
-      timeZone: "Europe/Rome",
-    }),
+  const hh = Number(
+    d.toLocaleString("it-IT", { hour: "2-digit", hour12: false, timeZone: TZ })
   )
-  const m = Number(
-    d.toLocaleString("it-IT", {
-      minute: "2-digit",
-      timeZone: "Europe/Rome",
-    }),
-  )
-  return h * 60 + m
+  const mm = Number(d.toLocaleString("it-IT", { minute: "2-digit", timeZone: TZ }))
+  return hh * 60 + mm
 }
 
-// pick the best display name
+const toISODateLocalRome = (d: Date) => {
+  // yyyy-mm-dd expressed in Europe/Rome calendar date
+  const y = Number(d.toLocaleString("it-IT", { year: "numeric", timeZone: TZ }))
+  const m = Number(d.toLocaleString("it-IT", { month: "2-digit", timeZone: TZ }))
+  const day = Number(d.toLocaleString("it-IT", { day: "2-digit", timeZone: TZ }))
+  return `${y}-${pad2(m)}-${pad2(day)}`
+}
+
+/** ===================
+ *  Mapping helpers
+ *  =================== */
 const displayName = (a: RawAppointment) => {
   const full = [a.contact?.first_name, a.contact?.last_name].filter(Boolean).join(" ").trim()
   return a.patient_name || full || a.contact?.phone_e164 || a.phone_e164 || "Sconosciuto"
 }
 const toUi = (a: RawAppointment): UiAppointment => {
-  const start = a.start_at ?? a.appointment_at
+  const start = a.start_at ?? a.appointment_at ?? new Date().toISOString()
   return {
     id: a.id,
     chair: Number(a.chair ?? 1),
-    start: start ?? new Date().toISOString(),
+    start,
     durationMin: Number(a.duration_min ?? 30),
     name: displayName(a),
     phone: a.contact?.phone_e164 ?? a.phone_e164 ?? null,
@@ -90,52 +98,53 @@ async function fetchAppointments(dayISO: string): Promise<UiAppointment[]> {
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   const j = await r.json()
   const items: RawAppointment[] = j.items ?? j.appointments ?? []
-  return (Array.isArray(items) ? items : []).map(toUi)
+  return items.map(toUi)
 }
 
-/* ---------- agenda layout ---------- */
-const DAY_START_MIN = 10 * 60
-const DAY_END_MIN = 20 * 60
-const DEFAULT_SLOT_MIN = 30
-const PX_PER_MIN = 3 // <-- single source of truth for pixel-to-minute
-const RAIL_W = 64
-const CONTENT_TOP = 12
-const CONTENT_PAD_X = 10
+/** ===================
+ *  Layout helpers
+ *  =================== */
+const PX_PER_MIN = 2  // << the SINGLE source of truth for vertical scale
+const DAY_START_MIN = DAY_START_H * 60
+const DAY_END_MIN = DAY_END_H * 60
+const DAY_TOTAL_MIN = DAY_END_MIN - DAY_START_MIN
+const CONTAINER_HEIGHT = DAY_TOTAL_MIN * PX_PER_MIN
 
 type Positioned = UiAppointment & {
-  topPx: number
-  heightPx: number
+  topMin: number
+  heightMin: number
   lane: number
   laneCount: number
 }
 
-function layoutWithLanes(items: UiAppointment[], slotMin: number): Positioned[] {
+function layoutWithLanes(items: UiAppointment[]): Positioned[] {
   const sorted = [...items].sort((a, b) => minutesOfDayRome(a.start) - minutesOfDayRome(b.start))
   type Active = { appt: Positioned; endMin: number }
   const out: Positioned[] = []
   let active: Active[] = []
+
   const flush = () => {
     if (!active.length) return
     const lanes = Math.max(...active.map(a => a.appt.lane)) + 1
-    active.forEach(a => {
-      a.appt.laneCount = lanes
-      out.push(a.appt)
-    })
+    active.forEach(a => { a.appt.laneCount = lanes; out.push(a.appt) })
     active = []
   }
+
   for (const appt of sorted) {
     const startMin = minutesOfDayRome(appt.start)
-    const heightMin = Math.max(slotMin, appt.durationMin || slotMin)
+    const clampedStart = Math.max(DAY_START_MIN, startMin)
+    const heightMin = Math.max(15, appt.durationMin || 15)
     const endMin = startMin + heightMin
     const latestEnd = active.reduce((m, a) => Math.max(m, a.endMin), -1)
     if (active.length && startMin >= latestEnd) flush()
+
     const used = new Set(active.map(a => a.appt.lane))
-    let lane = 0
-    while (used.has(lane)) lane++
+    let lane = 0; while (used.has(lane)) lane++
+
     const positioned: Positioned = {
       ...appt,
-      topPx: Math.round((startMin - DAY_START_MIN) * PX_PER_MIN),
-      heightPx: Math.round(heightMin * PX_PER_MIN),
+      topMin: clampedStart - DAY_START_MIN,
+      heightMin,
       lane,
       laneCount: 1,
     }
@@ -146,54 +155,18 @@ function layoutWithLanes(items: UiAppointment[], slotMin: number): Positioned[] 
   return out
 }
 
-/* ---------- Time rail ---------- */
-function TimeRail({ slotMin, heightPx }: { slotMin: number; heightPx: number }) {
-  const marks = useMemo(() => {
-    const out: { topPx: number; label: string; isHour: boolean }[] = []
-    for (let m = DAY_START_MIN; m <= DAY_END_MIN; m += 15) {
-      const topPx = Math.round((m - DAY_START_MIN) * PX_PER_MIN)
-      const hh = Math.floor(m / 60)
-      const mm = m % 60
-      const isHour = mm === 0
-      if (isHour || mm % slotMin === 0) {
-        out.push({ topPx, label: `${pad2(hh)}:${pad2(mm)}`, isHour })
-      } else {
-        out.push({ topPx, label: "", isHour: false })
-      }
-    }
-    return out
-  }, [slotMin])
-
-  return (
-    <div style={{ position: "relative", height: heightPx + CONTENT_TOP * 2 }}>
-      <div style={{ position: "absolute", inset: `-${0}px 0 0 0`, top: CONTENT_TOP }}>
-        {marks.map((m, i) => (
-          <div key={i} style={{ position: "absolute", top: m.topPx, left: 0, right: 0 }}>
-            {m.label && (
-              <div style={{ position: "absolute", left: 0, transform: "translateY(-50%)", fontSize: 12, color: "#6b7280" }}>
-                {m.label}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/* ---------- Modal: create appointment ---------- */
+/** ===================
+ *  Create modal
+ *  =================== */
 type CreatePayload = {
   dentist_id: string
   chair: number
   date: string
   time: string
   duration_min: number
-  // contact branch
   contact_id?: string | null
-  // manual branch
   patient_name?: string | null
   phone_e164?: string | null
-  // common
   note?: string | null
 }
 
@@ -207,12 +180,7 @@ function useDebounced<T>(value: T, delay = 250) {
 }
 
 function CreateModal({
-  visible,
-  onClose,
-  onSaved,
-  date,
-  chair,
-  timeHHmm,
+  visible, onClose, onSaved, date, chair, timeHHmm,
 }: {
   visible: boolean
   onClose: () => void
@@ -221,69 +189,46 @@ function CreateModal({
   chair: 1 | 2
   timeHHmm: string
 }) {
-  const [mode, setMode] = useState<"contact" | "manual">("contact")
-
-  // contact state
+  const [mode, setMode] = useState<"contact"|"manual">("contact")
   const [query, setQuery] = useState("")
   const debouncedQ = useDebounced(query)
   const [results, setResults] = useState<Contact[]>([])
   const [selected, setSelected] = useState<Contact | null>(null)
-  const [loadingQ, setLoadingQ] = useState(false)
-
-  // manual state
-  const [name, setName] = useState("")
-  const [phone, setPhone] = useState("")
-
-  // common
   const [duration, setDuration] = useState(30)
   const [note, setNote] = useState("")
+  const [name, setName] = useState("")
+  const [phone, setPhone] = useState("")
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     if (!visible) return
-    setErr(null)
-    setResults([])
-    setSelected(null)
-    setQuery("")
-    setName("")
-    setPhone("")
-    setNote("")
-    setDuration(30)
-    setMode("contact")
+    setErr(null); setSelected(null); setResults([]); setQuery(""); setName(""); setPhone(""); setNote("")
+    setDuration(30); setMode("contact")
   }, [visible, chair, timeHHmm])
 
   useEffect(() => {
     if (!visible || mode !== "contact") return
     const q = debouncedQ.trim()
-    if (!q) {
-      setResults([])
-      return
-    }
+    if (!q) { setResults([]); return }
     let cancel = false
     ;(async () => {
-      setLoadingQ(true)
       try {
         const r = await fetch(`/.netlify/functions/contacts-list?q=${encodeURIComponent(q)}`)
         const j = await r.json()
-        if (!cancel) setResults(Array.isArray(j.items) ? (j.items as Contact[]) : [])
+        if (!cancel) setResults(Array.isArray(j.items) ? j.items as Contact[] : [])
       } catch {
         if (!cancel) setResults([])
-      } finally {
-        if (!cancel) setLoadingQ(false)
       }
     })()
-    return () => {
-      cancel = true
-    }
+    return () => { cancel = true }
   }, [debouncedQ, mode, visible])
 
   if (!visible) return null
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setSaving(true)
-    setErr(null)
+    setSaving(true); setErr(null)
     try {
       const payload: CreatePayload = {
         dentist_id: "main",
@@ -321,132 +266,55 @@ function CreateModal({
 
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.25)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-      }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
       onClick={onClose}
     >
       <div
-        style={{
-          background: "#fff",
-          borderRadius: 8,
-          padding: 16,
-          width: 560,
-          boxShadow: "0 10px 40px rgba(0,0,0,0.2)",
-        }}
+        style={{ background: "#fff", borderRadius: 10, padding: 16, width: 520, maxWidth: "92vw", boxShadow: "0 14px 40px rgba(0,0,0,0.25)" }}
         onClick={e => e.stopPropagation()}
       >
         <h3 style={{ marginTop: 0 }}>Crea nuovo appuntamento</h3>
-
-        <div style={{ marginBottom: 8 }}>
-          Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b>
-        </div>
+        <div style={{ marginBottom: 8 }}>Poltrona: <b>{chair}</b> • Ora: <b>{timeHHmm}</b> • Data: <b>{date}</b></div>
 
         <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
-          <label>
-            <input
-              type="radio"
-              checked={mode === "contact"}
-              onChange={() => setMode("contact")}
-            />{" "}
-            Usa contatto
-          </label>
-          <label>
-            <input
-              type="radio"
-              checked={mode === "manual"}
-              onChange={() => setMode("manual")}
-            />{" "}
-            Inserisci manualmente
-          </label>
+          <label><input type="radio" checked={mode==="contact"} onChange={()=>setMode("contact")} /> Usa contatto</label>
+          <label><input type="radio" checked={mode==="manual"} onChange={()=>setMode("manual")} /> Inserisci manualmente</label>
         </div>
 
         <form onSubmit={onSubmit}>
           {mode === "contact" ? (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ position: "relative" }}>
-                <input
-                  placeholder="Cerca contatto (nome, cognome o telefono)"
-                  value={query}
-                  onChange={e => {
-                    setQuery(e.target.value)
-                    setSelected(null)
-                  }}
-                  style={{ width: "100%", paddingRight: 72 }}
-                />
-                <span
-                  style={{
-                    position: "absolute",
-                    right: 8,
-                    top: 6,
-                    fontSize: 12,
-                    color: "#666",
-                  }}
-                >
-                  {loadingQ ? "Cerco…" : selected ? "Selezionato" : "Scrivi per cercare"}
-                </span>
-              </div>
+              <input
+                placeholder="Cerca contatto (nome, cognome o telefono)"
+                value={query}
+                onChange={(e)=>{ setQuery(e.target.value); setSelected(null) }}
+                style={{ width: "100%" }}
+              />
               {!!results.length && !selected && (
-                <div
-                  style={{
-                    border: "1px solid #eee",
-                    borderRadius: 6,
-                    marginTop: 6,
-                    maxHeight: 200,
-                    overflow: "auto",
-                  }}
-                >
+                <div style={{ border:"1px solid #eee", borderRadius:6, marginTop:6, maxHeight:200, overflow:"auto" }}>
                   {results.map(c => {
-                    const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"
+                    const nm = [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"
                     return (
                       <button
                         type="button"
                         key={c.id}
-                        onClick={() => setSelected(c)}
-                        style={{
-                          display: "flex",
-                          width: "100%",
-                          textAlign: "left",
-                          padding: "8px 10px",
-                          borderBottom: "1px solid #f3f3f3",
-                          background: "#fff",
-                          cursor: "pointer",
-                        }}
+                        onClick={()=>setSelected(c)}
+                        style={{ display:"flex", width:"100%", textAlign:"left", padding:"8px 10px", borderBottom:"1px solid #f3f3f3", background:"#fff", cursor:"pointer" }}
                       >
-                        <div style={{ flex: 1 }}>{name}</div>
-                        <div style={{ color: "#666" }}>{c.phone_e164 || ""}</div>
+                        <div style={{ flex:1 }}>{nm}</div>
+                        <div style={{ color:"#666" }}>{c.phone_e164 || ""}</div>
                       </button>
                     )
                   })}
                 </div>
               )}
               {selected && (
-                <div
-                  style={{
-                    marginTop: 6,
-                    padding: 8,
-                    background: "#f7f7f7",
-                    borderRadius: 6,
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
+                <div style={{ marginTop: 6, padding: 8, background:"#f7f7f7", borderRadius:6, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                   <div>
-                    <div style={{ fontWeight: 600 }}>
-                      {[selected.first_name, selected.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#666" }}>{selected.phone_e164 || ""}</div>
+                    <div style={{ fontWeight:600 }}>{[selected.first_name, selected.last_name].filter(Boolean).join(" ").trim() || "(senza nome)"}</div>
+                    <div style={{ fontSize:12, color:"#666" }}>{selected.phone_e164 || ""}</div>
                   </div>
-                  <button type="button" onClick={() => setSelected(null)}>
-                    Cambia
-                  </button>
+                  <button type="button" onClick={()=>setSelected(null)}>Cambia</button>
                 </div>
               )}
             </div>
@@ -454,40 +322,36 @@ function CreateModal({
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 8 }}>
                 Nome paziente
-                <input value={name} onChange={e => setName(e.target.value)} style={{ width: "100%" }} />
+                <input value={name} onChange={(e)=>setName(e.target.value)} style={{ width: "100%" }} />
               </label>
               <label style={{ display: "block", marginBottom: 8 }}>
                 Telefono (E.164, es. +39333...)
-                <input value={phone} onChange={e => setPhone(e.target.value)} style={{ width: "100%" }} />
+                <input value={phone} onChange={(e)=>setPhone(e.target.value)} style={{ width: "100%" }} />
               </label>
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+          <div style={{ display:"flex", gap:12, marginBottom: 12 }}>
             <label>
               Durata{" "}
-              <select value={duration} onChange={e => setDuration(Number(e.target.value))}>
+              <select value={duration} onChange={(e)=>setDuration(Number(e.target.value))}>
                 <option value={15}>15 min</option>
                 <option value={30}>30 min</option>
                 <option value={45}>45 min</option>
                 <option value={60}>60 min</option>
               </select>
             </label>
-            <label style={{ flex: 1 }}>
+            <label style={{ flex:1 }}>
               Note
-              <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} style={{ width: "100%" }} />
+              <textarea value={note} onChange={(e)=>setNote(e.target.value)} rows={3} style={{ width: "100%" }} />
             </label>
           </div>
 
-          {err && <div style={{ color: "crimson", marginBottom: 8 }}>{err}</div>}
+          {err && <div style={{ color:"crimson", marginBottom: 8 }}>{err}</div>}
 
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button type="button" onClick={onClose} disabled={saving}>
-              Annulla
-            </button>
-            <button type="submit" disabled={saving}>
-              {saving ? "Salvo…" : "Salva"}
-            </button>
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+            <button type="button" onClick={onClose} disabled={saving}>Annulla</button>
+            <button type="submit" disabled={saving}>{saving ? "Salvo…" : "Salva"}</button>
           </div>
         </form>
       </div>
@@ -495,29 +359,50 @@ function CreateModal({
   )
 }
 
-/* ---------- Column & Card ---------- */
+/** ===================
+ *  Time Rail
+ *  =================== */
+function TimeRail({ slotMin }: { slotMin: number }) {
+  const labels: {top:number, text:string}[] = []
+  for (let m = DAY_START_MIN; m <= DAY_END_MIN; m += 30) {
+    const hh = Math.floor(m/60), mm = m % 60
+    labels.push({ top: (m - DAY_START_MIN) * PX_PER_MIN, text: `${pad2(hh)}:${pad2(mm)}` })
+  }
+  return (
+    <div style={{ position:"relative", width: 72 }}>
+      {/* full height spacer */}
+      <div style={{ height: CONTAINER_HEIGHT }} />
+      {labels.map((l) => (
+        <div key={l.text} style={{ position:"absolute", left:0, right:0, top:l.top, transform:"translateY(-50%)", fontSize:12, color:"#333" }}>
+          {l.text}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** ===================
+ *  Column + Card
+ *  =================== */
 function Column({
-  title,
-  items,
-  slotMin,
-  heightPx,
-  onSlotClick,
-}: {
-  title: string
-  items: Positioned[]
-  slotMin: number
-  heightPx: number
-  onSlotClick: (hhmm: string) => void
-}) {
-  // precompute slot marks used both for background lines and click hit areas
+  title, items, slotMin, onSlotClick,
+}: { title:string; items:Positioned[]; slotMin:number; onSlotClick:(hhmm:string)=>void }) {
+
+  // background grid: bold black line at each slot boundary
+  const bg = `repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0.15) 0px,
+    rgba(0,0,0,0.15) 1px,
+    transparent 1px,
+    transparent ${slotMin * PX_PER_MIN}px
+  )`
+
+  // clickable slots
   const slots = useMemo(() => {
-    const out: { topPx: number; hhmm: string }[] = []
+    const out: { topPx:number; label:string }[] = []
     for (let m = DAY_START_MIN; m < DAY_END_MIN; m += slotMin) {
-      const hh = Math.floor(m / 60)
-      const mm = m % 60
-      const hhmm = `${pad2(hh)}:${pad2(mm)}`
-      const topPx = Math.round((m - DAY_START_MIN) * PX_PER_MIN)
-      out.push({ topPx, hhmm })
+      const hh = Math.floor(m/60), mm = m % 60
+      out.push({ topPx: (m - DAY_START_MIN) * PX_PER_MIN, label: `${pad2(hh)}:${pad2(mm)}` })
     }
     return out
   }, [slotMin])
@@ -527,162 +412,127 @@ function Column({
       <h3 style={{ marginBottom: 8 }}>{title}</h3>
       <div
         style={{
-          position: "relative",
-          height: heightPx + CONTENT_TOP * 2,
-          border: "1px dashed #d1d5db",
-          borderRadius: 8,
-          boxSizing: "border-box",
-          background: "repeating-linear-gradient(#fff, #fff 16px, rgba(0,0,0,0.02) 16px, rgba(0,0,0,0.02) 17px)",
+          position:"relative",
+          border:"1px dashed #cfcfcf",
+          borderRadius: 10,
+          padding: 8,
+          height: CONTAINER_HEIGHT,
+          background: bg,
+          overflow: "hidden",
         }}
       >
-        {/* inner canvas with equal top/bottom offset so it lines up with time rail */}
-        <div
-          style={{
-            position: "absolute",
-            top: CONTENT_TOP,
-            left: CONTENT_PAD_X,
-            right: CONTENT_PAD_X,
-            height: heightPx,
-          }}
-        >
-          {/* dotted lines & clickable slots */}
-          {slots.map(s => (
-            <React.Fragment key={s.hhmm}>
-              {/* horizontal line */}
-              <div
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  top: s.topPx,
-                  height: 1,
-                  borderBottom: "1px dashed rgba(0,0,0,0.08)",
-                }}
-              />
-              {/* click area */}
-              <button
-                onClick={() => onSlotClick(s.hhmm)}
-                title={`Nuovo alle ${s.hhmm}`}
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  top: s.topPx,
-                  height: Math.round(slotMin * PX_PER_MIN),
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                }}
-                aria-label={`Crea appuntamento alle ${s.hhmm}`}
-              />
-            </React.Fragment>
-          ))}
-          {/* appointments */}
-          {items.map(appt => (
-            <Card key={appt.id} appt={appt} />
-          ))}
-          {items.length === 0 && (
-            <div style={{ opacity: 0.5, textAlign: "center", padding: 16 }}>Clicca uno slot per creare un appuntamento</div>
-          )}
-        </div>
+        {/* Clickable area per-slot */}
+        {slots.map(s => (
+          <button
+            key={s.label}
+            onClick={() => onSlotClick(s.label)}
+            title={`Nuovo alle ${s.label}`}
+            style={{
+              position:"absolute",
+              left: 8, right: 8,
+              top: s.topPx,
+              height: slotMin * PX_PER_MIN,
+              background:"transparent",
+              border:"none",
+              cursor:"pointer",
+              zIndex: 1,
+            }}
+            aria-label={`Crea appuntamento alle ${s.label}`}
+          />
+        ))}
+
+        {/* Cards */}
+        {items.map(appt => <Card key={appt.id} appt={appt} />)}
+
+        {items.length === 0 && (
+          <div style={{ position:"absolute", left:0, right:0, top:"45%", textAlign:"center", opacity:0.6 }}>
+            Clicca uno slot per creare un appuntamento
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-function Card({ appt }: { appt: Positioned }) {
-  const gap = 6
-  const widthPct = (100 - (appt.laneCount - 1) * (gap / 2)) / appt.laneCount
-  const leftPct = appt.lane * widthPct + (appt.lane * (gap / 2) * 100) / 100
+function Card({ appt }: { appt:Positioned }) {
+  const gap = 6 // px between lanes
+  const widthCalc = `calc((100% - ${(appt.laneCount - 1) * gap}px) / ${appt.laneCount})`
+  const leftCalc = `calc((${widthCalc} + ${gap}px) * ${appt.lane})`
+
   return (
     <div
       style={{
-        position: "absolute",
-        left: `${leftPct}%`,
-        width: `${widthPct}%`,
-        top: appt.topPx,
-        height: appt.heightPx,
-        background: "#e6f7eb",
-        border: "1px solid #bfe3c8",
-        borderRadius: 8,
-        padding: 8,
-        overflow: "hidden",
-        boxSizing: "border-box",
+        position:"absolute",
+        left: leftCalc, width: widthCalc,
+        top: appt.topMin * PX_PER_MIN,
+        height: appt.heightMin * PX_PER_MIN,
+        background:"#e6f7eb",
+        border:"1px solid #bfe3c8",
+        borderRadius:8,
+        padding:8,
+        overflow:"hidden",
+        boxSizing:"border-box",
+        zIndex:2,
       }}
       title={`${toRomeHHmm(appt.start)} • ${appt.durationMin} min`}
     >
-      <div style={{ fontWeight: 600, marginBottom: 4, textTransform: "capitalize" }}>{appt.name}</div>
-      <div style={{ fontSize: 12 }}>{toRomeHHmm(appt.start)} • {appt.durationMin} min</div>
-      {appt.note && <div style={{ fontSize: 12, opacity: 0.8 }}>{appt.note}</div>}
+      <div style={{ fontWeight:600, marginBottom:4, textTransform:"capitalize" }}>{appt.name}</div>
+      <div style={{ fontSize:12 }}>{toRomeHHmm(appt.start)} • {appt.durationMin} min</div>
+      {appt.note && <div style={{ fontSize:12, opacity:0.8 }}>{appt.note}</div>}
     </div>
   )
 }
 
-/* ---------- Page ---------- */
+/** ===================
+ *  Page
+ *  =================== */
 export function AgendaPage() {
-  const [selectedDate, setSelectedDate] = useState<string>(() => {
-    const now = new Date()
-    return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`
-  })
+  const [selectedDate, setSelectedDate] = useState<string>(toISODateLocalRome(new Date()))
+  const [slotMin, setSlotMin] = useState<number>(30)
   const [items, setItems] = useState<UiAppointment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const [slotMin, setSlotMin] = useState<number>(DEFAULT_SLOT_MIN)
-  const heightPx = (DAY_END_MIN - DAY_START_MIN) * PX_PER_MIN
-
-  const [modal, setModal] = useState<{ open: boolean; chair: 1 | 2; timeHHmm: string }>({
-    open: false,
-    chair: 1,
-    timeHHmm: "10:00",
+  const [modal, setModal] = useState<{open:boolean, chair:1|2, timeHHmm:string}>({
+    open:false, chair:1, timeHHmm:"10:00"
   })
 
-  useEffect(() => {
-    let live = true
-    setLoading(true)
-    setError(null)
-    fetchAppointments(selectedDate)
-      .then(list => {
-        if (live) setItems(list)
-      })
-      .catch(e => {
-        if (live) setError(String(e?.message || e))
-      })
-      .finally(() => {
-        if (live) setLoading(false)
-      })
-    return () => {
-      live = false
-    }
-  }, [selectedDate])
-
-  const chair1 = useMemo(() => layoutWithLanes(items.filter(i => i.chair === 1), slotMin), [items, slotMin])
-  const chair2 = useMemo(() => layoutWithLanes(items.filter(i => i.chair === 2), slotMin), [items, slotMin])
-
   const reload = () => {
-    fetchAppointments(selectedDate).then(setItems).catch(console.error)
+    setLoading(true); setError(null)
+    fetchAppointments(selectedDate)
+      .then(setItems)
+      .catch(e => setError(String(e?.message || e)))
+      .finally(() => setLoading(false))
   }
 
-  const openNewAt = (chair: 1 | 2, hhmm: string) => {
-    setModal({ open: true, chair, timeHHmm: hhmm })
+  useEffect(() => { reload() }, [selectedDate])
+
+  const chair1 = useMemo(()=>layoutWithLanes(items.filter(i=>i.chair===1)), [items])
+  const chair2 = useMemo(()=>layoutWithLanes(items.filter(i=>i.chair===2)), [items])
+
+  const openNewAt = (chair:1|2, hhmm:string) => {
+    const w:any = window
+    if (typeof w.openCreateAppointment === "function") {
+      w.openCreateAppointment({ chair, time: hhmm, date: selectedDate, onSaved: reload }); return
+    }
+    if (typeof w.openNewAppointment === "function") {
+      w.openNewAppointment(chair, hhmm, selectedDate, reload); return
+    }
+    if (typeof w.appointmentNew === "function") {
+      w.appointmentNew({ chair, time: hhmm, date: selectedDate, onSaved: reload }); return
+    }
+    setModal({ open:true, chair, timeHHmm: hhmm })
   }
 
   return (
     <div style={{ padding: 16 }}>
       <h1 style={{ marginBottom: 8 }}>V Dental – Agenda &amp; Logs</h1>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
-        <label>
-          Data{" "}
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={e => setSelectedDate(e.target.value)}
-          />
+      <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:12 }}>
+        <label>Data{" "}
+          <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} />
         </label>
-        <label>
-          Dimensione slot{" "}
-          <select value={slotMin} onChange={e => setSlotMin(Number(e.target.value))}>
+        <label>Dimensione slot{" "}
+          <select value={slotMin} onChange={(e)=>setSlotMin(Number(e.target.value))}>
             <option value={15}>15 min</option>
             <option value={30}>30 min</option>
             <option value={45}>45 min</option>
@@ -690,25 +540,18 @@ export function AgendaPage() {
           </select>
         </label>
         {loading && <span>Carico…</span>}
-        {error && <span style={{ color: "crimson" }}>{error}</span>}
+        {error && <span style={{ color:"crimson" }}>{error}</span>}
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: `${RAIL_W}px 1fr 1fr`,
-          gap: 16,
-          alignItems: "start",
-        }}
-      >
-        <TimeRail slotMin={slotMin} heightPx={heightPx} />
-        <Column title="Poltrona 1" items={chair1} slotMin={slotMin} heightPx={heightPx} onSlotClick={hhmm => openNewAt(1, hhmm)} />
-        <Column title="Poltrona 2" items={chair2} slotMin={slotMin} heightPx={heightPx} onSlotClick={hhmm => openNewAt(2, hhmm)} />
+      <div style={{ display:"grid", gridTemplateColumns:"72px 1fr 1fr", gap:16 }}>
+        <TimeRail slotMin={slotMin} />
+        <Column title="Poltrona 1" items={chair1} slotMin={slotMin} onSlotClick={(hhmm)=>openNewAt(1, hhmm)} />
+        <Column title="Poltrona 2" items={chair2} slotMin={slotMin} onSlotClick={(hhmm)=>openNewAt(2, hhmm)} />
       </div>
 
       <CreateModal
         visible={modal.open}
-        onClose={() => setModal(m => ({ ...m, open: false }))}
+        onClose={()=>setModal(m=>({...m, open:false}))}
         onSaved={reload}
         date={selectedDate}
         chair={modal.chair}
@@ -717,3 +560,5 @@ export function AgendaPage() {
     </div>
   )
 }
+
+export default AgendaPage
