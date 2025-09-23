@@ -1,13 +1,31 @@
-
-<!doctype html>
+<!DOCTYPE html>
 <html lang="it">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>V Dental - Agenda & Logs</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whatsapp Reminder & Review Booster</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="navbar">Whatsapp Reminder & Review Booster</nav>
+  <main class="agenda">
+    <aside class="sidebar">
+      <h2>Agenda</h2>
+      <div id="hours"></div>
+    </aside>
+    <section class="calendar">
+      <div class="calendar-grid" id="calendarGrid"></div>
+    </section>
+  </main>
+  <div class="new-appointment-card" id="newAppointmentCard">
+    <h3>Nuovo Appuntamento</h3>
+    <form>
+      <input type="text" placeholder="Nome Paziente" required />
+      <input type="time" required />
+      <input type="number" placeholder="Durata (min)" required />
+      <button type="submit">Salva</button>
+    </form>
+  </div>
+  <script src="app.js"></script>
+</body>
 </html>
