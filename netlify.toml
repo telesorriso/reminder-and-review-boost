@@ -17,8 +17,6 @@
   cron     = "0 19 * * *"
   timezone = "Europe/Rome"
 
-[functions]
-  directory = "netlify/functions"
 
 # Scheduled Function per i reminder quotidiani
 [functions."reminders-daily"]
