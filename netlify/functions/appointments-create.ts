@@ -1,74 +1,85 @@
-import type { Handler } from "@netlify/functions";
-import { ok, badRequest, serverError, supa, romeToUtcISO } from "./_shared";
-
-type Body = {
-  chair?: number;
-  date?: string;
-  day?: string;
-  date_local?: string;
-  dateLocal?: string;
-  time?: string;
-  time_local?: string;
-  timeLocal?: string;
-  duration_min?: number;
-  contact_id?: string;
-  patient_name?: string;
-  dentist_id?: string;
-  note?: string;
-  phone_e164?: string; // compat: colonna presente in appointments (via rapida)
-};
-
-const pick = (...vals: (string | undefined | null)[]) =>
-  (vals.find(v => typeof v === "string" && v.trim().length > 0) || "").trim();
+import type { Handler } from '@netlify/functions'
+import { supa, ok, badRequest, serverError } from './_shared'
 
 export const handler: Handler = async (event) => {
-  // parse body safe
-  let body: Body | null = null;
   try {
-    body = event.body ? (JSON.parse(event.body) as Body) : null;
-  } catch {
-    return badRequest("Invalid JSON body");
-  }
-  if (!body) return badRequest("Missing JSON body");
+    if (event.httpMethod !== 'POST') {
+      return badRequest('Use POST')
+    }
 
-  try {
-    const dentist_id = (body.dentist_id || "main").trim();
-    const chair = Number(body.chair || 0);
-    const duration_min = Number(body.duration_min || 30);
-    const note = (body.note || "").trim() || null;
-    const contact_id = body.contact_id || null;
-    const patient_name = (body.patient_name || "").trim() || null;
-    const phone_e164 = (body.phone_e164 || "").trim() || null;
+    const body = JSON.parse(event.body || '{}')
+    const { dentist_id, chair, date, time, duration_min, contact_id, patient_name, phone_e164, note } = body
 
-    if (!chair || chair < 1) return badRequest("Missing or invalid 'chair'");
-    if (!duration_min || duration_min <= 0) return badRequest("Missing or invalid 'duration_min'");
+    if (!dentist_id || !chair || !date || !time) {
+      return badRequest('Missing required fields')
+    }
 
-    // normalizza date/time (Europa/Roma)
-    const date = pick(body.date, body.day, body.date_local, body.dateLocal);
-    const time = pick(body.time, body.time_local, body.timeLocal);
-    const start_at = romeToUtcISO(date, time);
-    if (!start_at) return badRequest("Missing or invalid 'date'/'time'");
+    const startIso = new Date(`${date}T${time}:00.000Z`).toISOString()
 
-    // inserisco valorizzando sia start_at che appointment_at (compat)
-    const { data, error } = await supa
-      .from("appointments")
-      .insert([{
+    // === CREA APPUNTAMENTO ===
+    const { data: inserted, error } = await supa
+      .from('appointments')
+      .insert({
         dentist_id,
         chair,
-        start_at,                 // nuovo
-        appointment_at: start_at, // compat
-        duration_min,
-        contact_id,
-        patient_name,
-        note,
-        phone_e164                // compat: colonna presente
-      }])
-      .select("id, dentist_id, chair, start_at, appointment_at, duration_min, patient_name, contact_id, note, phone_e164")
-      .single();
+        appointment_at: startIso,
+        duration_min: duration_min || 30,
+        contact_id: contact_id || null,
+        patient_name: patient_name || null,
+        phone_e164: phone_e164 || null,
+        note: note || null,
+        status: 'booked',
+      })
+      .select()
+      .maybeSingle()
 
-    if (error) return serverError(error);
-    return ok({ appointment: data });
-  } catch (e) {
-    return serverError(e);
+    if (error || !inserted) {
+      return serverError(error?.message || 'Insert failed')
+    }
+
+    const appt = inserted
+
+    // === ENQUEUE REMINDERS ===
+    try {
+      const apptId = appt.id as string
+      const confirmBody =
+        `✅ Appuntamento confermato: ${appt.patient_name || 'Paziente'} ` +
+        `alle ${new Date(appt.appointment_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })} ` +
+        `del ${new Date(appt.appointment_at).toLocaleDateString('it-IT')}. A presto!`
+
+      const delayHours = Number((body as any).review_delay_hours ?? 2)
+      const reviewWhen = new Date(new Date(appt.appointment_at).getTime() + delayHours * 3600_000).toISOString()
+      const reviewBody =
+        `Ciao! Com'è andata la visita? Se ti va, lasciaci una recensione 🙏 ` +
+        `${process.env.VITE_GOOGLE_REVIEW_LINK || ''}`
+
+      const rows = [
+        {
+          contact_id: appt.contact_id,
+          appointment_id: apptId,
+          phone_e164: appt.phone_e164!,
+          body: confirmBody,
+          due_at: new Date().toISOString(),
+          status: 'pending',
+        },
+        {
+          contact_id: appt.contact_id,
+          appointment_id: apptId,
+          phone_e164: appt.phone_e164!,
+          body: reviewBody,
+          due_at: reviewWhen,
+          status: 'pending',
+        },
+      ]
+
+      const { error: qErr } = await supa.from('scheduled_messages').insert(rows)
+      if (qErr) console.warn('Failed to enqueue messages:', qErr.message)
+    } catch (e: any) {
+      console.warn('Enqueue error:', e?.message || e)
+    }
+
+    return ok({ appointment: appt })
+  } catch (e: any) {
+    return serverError(e?.message || 'Unhandled error')
   }
-};
+}
