@@ -1,0 +1,11 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[scheduled]]
+  name = "reminders-daily"
+  cron = "0 19 * * *" # tutti i giorni alle 19

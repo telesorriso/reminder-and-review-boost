@@ -1,0 +1,15 @@
+{
+  "name": "reminder-and-review-boost",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "netlify": "netlify dev"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.3"
+  },
+  "devDependencies": {
+    "vite": "^4.0.0"
+  }
+}

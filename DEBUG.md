@@ -1,0 +1,1 @@
+# Debug notes for Reminder and Review Boost V8\n\n- Netlify scheduled function runs daily at 19:00 to enqueue reminders for next day.\n- appointment-create function enqueues confirmation, -1h reminder, +2h review.\n- scheduled_messages table is the queue consumed by the WhatsApp bot.\n
