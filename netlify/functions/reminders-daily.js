@@ -1,42 +1,47 @@
-import { createClient } from '@supabase/supabase-js'
+import type { Handler } from '@netlify/functions'
+import { supa, ok, serverError } from './_shared'
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-)
-
-export async function handler() {
+export const handler: Handler = async () => {
   try {
-    // Prendi tutti i reminder da inviare entro ora
-    const { data, error } = await supabase
-      .from('reminders')
+    const now = new Date().toISOString()
+
+    // Trova tutti i messaggi pending e scaduti
+    const { data: dueMessages, error } = await supa
+      .from('scheduled_messages')
       .select('*')
-      .eq('status', 'queued')
-      .lte('due_at', new Date().toISOString())
+      .eq('status', 'pending')
+      .lte('due_at', now)
 
-    if (error) throw error
-
-    if (!data || data.length === 0) {
-      return { statusCode: 200, body: "Nessun reminder da inviare" }
+    if (error) return serverError(error.message)
+    if (!dueMessages || dueMessages.length === 0) {
+      return ok({ message: 'Nessun reminder da inviare' })
     }
 
-    // Ciclo e invio (per ora simuliamo con log)
-    for (const reminder of data) {
-      console.log(`Invio reminder a ${reminder.phone_e164}: ${reminder.text}`)
+    for (const msg of dueMessages) {
+      try {
+        // simulazione invio WhatsApp
+        console.log('Invio messaggio a', msg.phone_e164, msg.body)
 
-      // qui puoi chiamare la tua API del bot WhatsApp
-      // es: await fetch(WA_API_URL, { method: "POST", body: JSON.stringify({...}) })
-
-      // Aggiorna status a "sent"
-      await supabase
-        .from('reminders')
-        .update({ status: 'sent', sent_at: new Date().toISOString() })
-        .eq('id', reminder.id)
+        await supa
+          .from('scheduled_messages')
+          .update({
+            status: 'sent',
+            sent_at: new Date().toISOString(),
+          })
+          .eq('id', msg.id)
+      } catch (err: any) {
+        await supa
+          .from('scheduled_messages')
+          .update({
+            status: 'failed',
+            last_error: err?.message || 'Errore invio',
+          })
+          .eq('id', msg.id)
+      }
     }
 
-    return { statusCode: 200, body: "Reminder processati" }
-  } catch (err) {
-    console.error(err)
-    return { statusCode: 500, body: err.message }
+    return ok({ sent: dueMessages.length })
+  } catch (e: any) {
+    return serverError(e?.message || 'Unhandled error')
   }
 }
